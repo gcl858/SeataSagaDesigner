@@ -1,5 +1,14 @@
 import type {NextConfig} from 'next';
 
+const isGitHubPages = process.env.BUILD_TARGET === 'github-pages';
+const rawPagesBasePath = (
+  process.env.GITHUB_PAGES_BASE_PATH || '/SeataSagaDesigner'
+).trim();
+const githubPagesBasePath = rawPagesBasePath.startsWith('/')
+  ? rawPagesBasePath.replace(/\/+$/, '')
+  : `/${rawPagesBasePath.replace(/\/+$/, '')}`;
+const basePath = isGitHubPages ? githubPagesBasePath : '';
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   eslint: {
@@ -8,8 +17,12 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: false,
   },
+  env: {
+    NEXT_PUBLIC_BASE_PATH: basePath,
+  },
   // Allow access to remote image placeholder.
   images: {
+    ...(isGitHubPages ? {unoptimized: true} : {}),
     remotePatterns: [
       {
         protocol: 'https',
@@ -19,7 +32,13 @@ const nextConfig: NextConfig = {
       },
     ],
   },
-  output: 'standalone',
+  output: isGitHubPages ? 'export' : 'standalone',
+  ...(isGitHubPages
+    ? {
+        basePath,
+        trailingSlash: true,
+      }
+    : {}),
   transpilePackages: ['motion'],
   webpack: (config, {dev}) => {
     // HMR is disabled in AI Studio via DISABLE_HMR env var.

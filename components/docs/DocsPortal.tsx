@@ -26,6 +26,7 @@ import {
   searchDocsChapters,
 } from '@/lib/docs/docsCatalog';
 import { Locale } from '@/lib/saga/i18n';
+import { withBasePath } from '@/lib/basePath';
 import ArchitectureDiagram from './ArchitectureDiagrams';
 
 export default function DocsPortal() {
@@ -429,7 +430,7 @@ export default function DocsPortal() {
                         >
                           <div className="relative aspect-[16/10] w-full">
                             <Image
-                              src={fig.src}
+                              src={withBasePath(fig.src)}
                               alt={fig.alt}
                               fill
                               sizes="(max-width: 1024px) 100vw, 900px"
@@ -687,7 +688,7 @@ export default function DocsPortal() {
             </div>
             <div className="relative aspect-[16/10] w-full bg-slate-100 dark:bg-slate-950">
               <Image
-                src={lightboxFigure.src}
+                src={withBasePath(lightboxFigure.src)}
                 alt={lightboxFigure.alt}
                 fill
                 sizes="100vw"

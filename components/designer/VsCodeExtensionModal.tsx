@@ -32,6 +32,7 @@ import {
 } from '@/lib/saga/templates';
 import { parseSeataJsonToGraph } from '@/lib/saga/serializer';
 import { serializeGraphToSeataYaml } from '@/lib/saga/yaml';
+import { resolveRuntimeDesignerUrl, withBasePath } from '@/lib/basePath';
 
 interface VsCodeExtensionModalProps {
   open: boolean;
@@ -55,7 +56,9 @@ export default function VsCodeExtensionModal({
   const t = UI_COPY[locale];
   const [activeTab, setActiveTab] = useState<ModalTab>('install');
   const [designerUrl, setDesignerUrl] = useState<string>(() =>
-    typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000'
+    typeof window !== 'undefined'
+      ? resolveRuntimeDesignerUrl(window.location.origin)
+      : 'http://localhost:3000'
   );
   const [defaultFormat, setDefaultFormat] = useState<'yaml' | 'json'>('yaml');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -646,7 +649,7 @@ export default function VsCodeExtensionModal({
                     ref={iframeRef}
                     title="VS Code Webview Embedded Seata Saga Designer"
                     data-testid="vscode-live-preview-iframe"
-                    src={`/?embed=vscode&theme=${previewTheme}&locale=${locale}`}
+                    src={`${withBasePath('/')}?embed=vscode&theme=${previewTheme}&locale=${locale}`}
                     className="w-full h-full border-0"
                   />
                 </div>
