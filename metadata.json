@@ -1,0 +1,6 @@
+{
+  "name": "Seata Saga State Machine Designer",
+  "description": "Visual state machine designer, validator, JSON editor, and compensation simulator for Apache Seata Saga distributed transactions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
