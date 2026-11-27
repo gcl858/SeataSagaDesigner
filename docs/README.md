@@ -2,6 +2,10 @@
 
 本系列文件涵蓋視覺化設計器、雙欄行號閃爍同步、YAML `#` 註解保留、多層 `SubStateMachine` 巢狀鑽取、分散式事務補償模擬與 VS Code 瀏覽器／桌面版擴充套件的完整圖文操作指南。
 
+## GitHub Pages 部署
+
+部署前，請由儲存庫管理員在 **Settings → Pages → Build and deployment → Source** 選擇 **GitHub Actions**。之後推送至 `main` 或手動執行 **Deploy to GitHub Pages** workflow；若先前執行失敗，請重新執行。靜態建置可在未啟用 Pages 時完成，但部署仍需要此設定。
+
 ## 文件目錄
 
 - [01. 總覽與快速入門指南](./01-getting-started.md) — 認識 Apache Seata Saga State Machine Designer 的完整工作區架構、內建官方範例與 3 分鐘建立第一個分散式事務狀態機的操作流程。
