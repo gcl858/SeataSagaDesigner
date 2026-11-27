@@ -1,6 +1,13 @@
 import { SagaGraph, ValidationIssue } from './types';
 
-export function validateSagaGraph(graph: SagaGraph): ValidationIssue[] {
+export interface ValidateSagaOptions {
+  availableMachineNames?: ReadonlySet<string>;
+}
+
+export function validateSagaGraph(
+  graph: SagaGraph,
+  options?: ValidateSagaOptions
+): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   let issueSeq = 1;
 
@@ -247,12 +254,32 @@ export function validateSagaGraph(graph: SagaGraph): ValidationIssue[] {
     }
 
     if (node.type === 'SubStateMachine') {
-      if (!node.stateMachineName?.trim()) {
+      const subName = node.stateMachineName?.trim() || '';
+      if (!subName) {
         pushIssue(
           'error',
           'MISSING_SUB_STATEMACHINE_NAME',
           `SubStateMachine「${node.name}」必須指定子狀態機名稱 (StateMachineName)。`,
           `SubStateMachine "${node.name}" requires StateMachineName.`,
+          { nodeId: node.id }
+        );
+      } else if (subName === graph.meta.name.trim()) {
+        pushIssue(
+          'error',
+          'SELF_RECURSIVE_SUBMACHINE',
+          `SubStateMachine「${node.name}」不可直接遞迴呼叫自身狀態機「${subName}」。`,
+          `SubStateMachine "${node.name}" cannot recursively invoke its own state machine "${subName}".`,
+          { nodeId: node.id }
+        );
+      } else if (
+        options?.availableMachineNames &&
+        !options.availableMachineNames.has(subName)
+      ) {
+        pushIssue(
+          'warning',
+          'UNRESOLVED_SUB_STATEMACHINE',
+          `子狀態機「${subName}」尚未在工作區定義，雙擊節點「${node.name}」可自動建立。`,
+          `SubStateMachine "${subName}" is not defined in this workspace yet; double-click "${node.name}" to scaffold it.`,
           { nodeId: node.id }
         );
       }

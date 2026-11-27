@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, FolderOpen, Layers, Plus, Trash2 } from 'lucide-react';
 import {
   RetryConfig,
   SagaEdge,
@@ -24,6 +24,10 @@ interface PropertiesPanelProps {
   onUpdateEdge: (edgeId: string, patch: Partial<SagaEdge>) => void;
   onDeleteEdge: (edgeId: string) => void;
   onSetCompensateState: (sourceNodeId: string, targetNodeId: string) => void;
+  machineRegistry?: Record<string, SagaGraph>;
+  parentContext?: { parentMachineName: string; viaNodeName?: string } | null;
+  onOpenSubStateMachine?: (nodeId: string) => void;
+  onReturnToParent?: () => void;
 }
 
 const inputCls =
@@ -44,6 +48,10 @@ export default function PropertiesPanel({
   onUpdateEdge,
   onDeleteEdge,
   onSetCompensateState,
+  machineRegistry,
+  parentContext,
+  onOpenSubStateMachine,
+  onReturnToParent,
 }: PropertiesPanelProps) {
   const t = UI_COPY[locale];
   const [nameEdit, setNameEdit] = useState<{
@@ -419,49 +427,89 @@ export default function PropertiesPanel({
           )}
 
           {/* SubStateMachine Fields */}
-          {selectedNode.type === 'SubStateMachine' && (
-            <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
-              <div>
-                <label htmlFor="sub-machine-name" className={labelCls}>
-                  StateMachineName
-                </label>
-                <input
-                  id="sub-machine-name"
-                  type="text"
-                  value={selectedNode.stateMachineName ?? ''}
-                  onChange={(e) =>
-                    onUpdateNode(selectedNode.id, {
-                      stateMachineName: e.target.value,
-                    })
-                  }
-                  placeholder="paymentSettlementSubSaga"
-                  className={inputCls}
-                />
-              </div>
-              <div>
-                <label htmlFor="sub-comp-select" className={labelCls}>
-                  CompensateState
-                </label>
-                <select
-                  id="sub-comp-select"
-                  value={currentCompEdge?.target ?? ''}
-                  onChange={(e) =>
-                    onSetCompensateState(selectedNode.id, e.target.value)
-                  }
-                  className={inputCls}
-                >
-                  <option value="">
-                    {locale === 'zh-TW' ? '（無補償任務）' : '(None)'}
-                  </option>
-                  {compensableCandidates.map((cand) => (
-                    <option key={cand.id} value={cand.id}>
-                      {cand.name}
+          {selectedNode.type === 'SubStateMachine' && (() => {
+            const targetName = (selectedNode.stateMachineName ?? '').trim();
+            const linkedGraph =
+              targetName && machineRegistry ? machineRegistry[targetName] : undefined;
+            const otherMachines = Object.keys(machineRegistry ?? {}).filter(
+              (name) => name !== graph.meta.name
+            );
+            const linkedNodeCount = linkedGraph
+              ? linkedGraph.nodes.filter((n) => n.type !== 'StartState').length
+              : 0;
+
+            return (
+              <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <div>
+                  <label htmlFor="sub-machine-name" className={labelCls}>
+                    StateMachineName
+                  </label>
+                  <input
+                    id="sub-machine-name"
+                    type="text"
+                    list="workspace-submachine-names"
+                    value={selectedNode.stateMachineName ?? ''}
+                    onChange={(e) =>
+                      onUpdateNode(selectedNode.id, {
+                        stateMachineName: e.target.value,
+                      })
+                    }
+                    placeholder="paymentSettlementSubSaga"
+                    className={inputCls}
+                  />
+                  {otherMachines.length > 0 && (
+                    <datalist id="workspace-submachine-names">
+                      {otherMachines.map((name) => (
+                        <option key={name} value={name} />
+                      ))}
+                    </datalist>
+                  )}
+                  <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                    {linkedGraph
+                      ? `${t.subMachineLinked} · ${linkedNodeCount} ${locale === 'zh-TW' ? '節點' : 'states'}`
+                      : t.subMachineWillCreate}
+                  </p>
+                </div>
+
+                {onOpenSubStateMachine && (
+                  <button
+                    type="button"
+                    data-testid="btn-open-submachine-prop"
+                    onClick={() => onOpenSubStateMachine(selectedNode.id)}
+                    className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 dark:bg-sky-600 dark:hover:bg-sky-500 rounded-lg transition-colors cursor-pointer"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    <span>
+                      {linkedGraph ? t.openSubMachine : t.createSubMachine}
+                    </span>
+                  </button>
+                )}
+
+                <div>
+                  <label htmlFor="sub-comp-select" className={labelCls}>
+                    CompensateState
+                  </label>
+                  <select
+                    id="sub-comp-select"
+                    value={currentCompEdge?.target ?? ''}
+                    onChange={(e) =>
+                      onSetCompensateState(selectedNode.id, e.target.value)
+                    }
+                    className={inputCls}
+                  >
+                    <option value="">
+                      {locale === 'zh-TW' ? '（無補償任務）' : '(None)'}
                     </option>
-                  ))}
-                </select>
+                    {compensableCandidates.map((cand) => (
+                      <option key={cand.id} value={cand.id}>
+                        {cand.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Fail Fields */}
           {selectedNode.type === 'Fail' && (
@@ -767,6 +815,26 @@ export default function PropertiesPanel({
       </div>
 
       <div className="p-4 space-y-4">
+        {parentContext && onReturnToParent && (
+          <div className="p-3 rounded-lg bg-sky-50/80 dark:bg-sky-950/35 border border-sky-200 dark:border-sky-900 space-y-2">
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-sky-800 dark:text-sky-300">
+              <Layers className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate font-mono">
+                {parentContext.parentMachineName}
+                {parentContext.viaNodeName ? ` › ${parentContext.viaNodeName}` : ''}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={onReturnToParent}
+              className="w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-sky-800 dark:text-sky-200 bg-white dark:bg-slate-900 hover:bg-sky-100/80 dark:hover:bg-sky-900/50 border border-sky-300 dark:border-sky-700 rounded-md transition-colors cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>{t.backToParent}</span>
+            </button>
+          </div>
+        )}
+
         <div>
           <label htmlFor="machine-name-input" className={labelCls}>
             Name

@@ -5,6 +5,7 @@ import {
   Undo2,
   Redo2,
   Upload,
+  FileCode2,
   ImageDown,
   LayoutGrid,
   ShieldCheck,
@@ -28,7 +29,8 @@ interface WorkspaceToolbarProps {
   onUndo: () => void;
   onRedo: () => void;
   onAutoLayout: () => void;
-  onImportJsonFile: (text: string) => void;
+  onImportFile: (text: string, filename: string) => void;
+  onExportYaml: () => void;
   onExportSvg: () => void;
   errorCount: number;
   warningCount: number;
@@ -52,7 +54,8 @@ export default function WorkspaceToolbar({
   onUndo,
   onRedo,
   onAutoLayout,
-  onImportJsonFile,
+  onImportFile,
+  onExportYaml,
   onExportSvg,
   errorCount,
   warningCount,
@@ -69,10 +72,11 @@ export default function WorkspaceToolbar({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const filename = file.name;
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === 'string') {
-        onImportJsonFile(reader.result);
+        onImportFile(reader.result, filename);
       }
     };
     reader.readAsText(file);
@@ -94,7 +98,7 @@ export default function WorkspaceToolbar({
             id="template-selector"
             value={selectedTemplateId}
             onChange={(e) => onSelectTemplate(e.target.value)}
-            className="h-8 px-2.5 text-xs font-medium bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-600"
+            className="h-8 max-w-[215px] px-2.5 text-xs font-medium bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-600 truncate"
           >
             {SAGA_TEMPLATES.map((tpl) => (
               <option key={tpl.id} value={tpl.id}>
@@ -108,7 +112,7 @@ export default function WorkspaceToolbar({
         </div>
 
         <div className="hidden xl:flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums truncate">
-          <span className="font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[200px]">
+          <span className="font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[180px]">
             {machineName}
           </span>
           <span aria-hidden="true">·</span>
@@ -161,10 +165,10 @@ export default function WorkspaceToolbar({
         <input
           ref={fileInputRef}
           type="file"
-          accept=".json,application/json"
+          accept=".json,.yaml,.yml,application/json,application/x-yaml,text/yaml"
           onChange={handleFileChange}
           className="hidden"
-          aria-label={t.importJson}
+          aria-label={t.importFile}
         />
         <button
           type="button"
@@ -172,7 +176,16 @@ export default function WorkspaceToolbar({
           className="inline-flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
           <Upload className="w-3.5 h-3.5" />
-          <span>{t.importJson}</span>
+          <span>{t.importFile}</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={onExportYaml}
+          className="inline-flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+        >
+          <FileCode2 className="w-3.5 h-3.5" />
+          <span>{t.exportYaml}</span>
         </button>
 
         <button

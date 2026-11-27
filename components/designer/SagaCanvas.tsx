@@ -18,6 +18,8 @@ import {
   Layers,
   XCircle,
   Play,
+  CornerDownRight,
+  FolderOpen,
 } from 'lucide-react';
 import {
   SagaEdge,
@@ -48,6 +50,9 @@ interface SagaCanvasProps {
   onQuickAppendNode: (sourceId: string, targetType: SeataStateType, asCompensation?: boolean) => void;
   onDeleteNode: (nodeId: string) => void;
   onChangeMode: (mode: InteractionMode) => void;
+  activeMachineKey?: string;
+  availableMachineNames?: ReadonlySet<string>;
+  onOpenSubStateMachine?: (nodeId: string) => void;
 }
 
 interface Point {
@@ -165,6 +170,9 @@ export default function SagaCanvas({
   onQuickAppendNode,
   onDeleteNode,
   onChangeMode,
+  activeMachineKey,
+  availableMachineNames,
+  onOpenSubStateMachine,
 }: SagaCanvasProps) {
   const t = UI_COPY[locale];
   const containerRef = useRef<HTMLDivElement>(null);
@@ -280,7 +288,7 @@ export default function SagaCanvas({
 
   const didAutoFitRef = useRef<string | null>(null);
   useEffect(() => {
-    const key = `${graph.meta.name}:${graph.meta.version}`;
+    const key = `${activeMachineKey ?? ''}:${graph.meta.name}:${graph.meta.version}`;
     if (didAutoFitRef.current !== key) {
       didAutoFitRef.current = key;
       const timer = requestAnimationFrame(() => {
@@ -288,7 +296,7 @@ export default function SagaCanvas({
       });
       return () => cancelAnimationFrame(timer);
     }
-  }, [graph.meta.name, graph.meta.version, handleFitView]);
+  }, [activeMachineKey, graph.meta.name, graph.meta.version, handleFitView]);
 
   const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     if (e.ctrlKey || e.metaKey) {
@@ -843,9 +851,21 @@ export default function SagaCanvas({
                 <button
                   type="button"
                   aria-label={`${node.name} (${node.type})`}
+                  title={
+                    node.type === 'SubStateMachine'
+                      ? t.doubleClickSubMachine
+                      : undefined
+                  }
                   onClick={(e) => {
                     e.stopPropagation();
                     if (mode === 'select') onSelectNode(node.id);
+                  }}
+                  onDoubleClick={(e) => {
+                    if (node.type === 'SubStateMachine' && onOpenSubStateMachine) {
+                      e.stopPropagation();
+                      setDraggingNode(null);
+                      onOpenSubStateMachine(node.id);
+                    }
                   }}
                   className={`w-full h-full rounded-xl px-3 py-2 text-left flex flex-col justify-between shadow-xs transition-shadow cursor-grab active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 ${
                     node.isForCompensation
@@ -853,7 +873,7 @@ export default function SagaCanvas({
                       : node.type === 'ScriptTask'
                         ? 'bg-white dark:bg-slate-900 border border-cyan-500 dark:border-cyan-500'
                         : node.type === 'SubStateMachine'
-                          ? 'bg-white dark:bg-slate-900 border-2 border-sky-600 dark:border-sky-400'
+                          ? 'bg-sky-50/35 dark:bg-slate-900 border-2 border-sky-600 dark:border-sky-400 hover:bg-sky-50/70 dark:hover:bg-sky-950/30'
                           : 'bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:border-blue-400 dark:hover:border-blue-500'
                   } ${
                     isSelected
@@ -868,11 +888,23 @@ export default function SagaCanvas({
                         {node.isForCompensation ? 'Compensate' : node.type}
                       </span>
                     </div>
-                    {node.isAsync && (
+                    {node.type === 'SubStateMachine' ? (
+                      <span
+                        aria-hidden="true"
+                        className={`inline-flex items-center gap-0.5 text-[10px] font-mono shrink-0 ${
+                          node.stateMachineName &&
+                          availableMachineNames?.has(node.stateMachineName.trim())
+                            ? 'text-sky-700 dark:text-sky-400'
+                            : 'text-slate-400 dark:text-slate-500'
+                        }`}
+                      >
+                        <CornerDownRight className="w-3 h-3" />
+                      </span>
+                    ) : node.isAsync ? (
                       <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
                         async
                       </span>
-                    )}
+                    ) : null}
                   </div>
 
                   <div className="min-w-0 w-full">
@@ -999,6 +1031,17 @@ export default function SagaCanvas({
             onMouseDown={(e) => e.stopPropagation()}
             className="absolute z-20 flex flex-col gap-1 p-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-md"
           >
+            {selectedNode.type === 'SubStateMachine' && onOpenSubStateMachine && (
+              <button
+                type="button"
+                title={t.openSubMachine}
+                aria-label={`${t.openSubMachine} ${selectedNode.name}`}
+                onClick={() => onOpenSubStateMachine(selectedNode.id)}
+                className="p-1.5 rounded bg-sky-50 dark:bg-sky-950/60 hover:bg-sky-100 dark:hover:bg-sky-900/70 text-sky-700 dark:text-sky-300 cursor-pointer"
+              >
+                <FolderOpen className="w-3.5 h-3.5" />
+              </button>
+            )}
             {selectedNode.type !== 'Succeed' && selectedNode.type !== 'Fail' && (
               <>
                 <button

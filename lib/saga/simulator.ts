@@ -92,10 +92,34 @@ function applyOutputMapping(
   }
 }
 
+export interface SimulationOptions {
+  subMachineGraphs?: Record<string, SagaGraph>;
+  maxDepth?: number;
+}
+
 export function runSagaSimulation(
   graph: SagaGraph,
   initialContext: Record<string, unknown>,
-  overrides: Record<string, NodeSimulationOverride> = {}
+  overrides: Record<string, NodeSimulationOverride> = {},
+  options?: SimulationOptions
+): SimulationResult {
+  return runSagaSimulationInternal(
+    graph,
+    initialContext,
+    overrides,
+    options,
+    0,
+    new Set([graph.meta.name])
+  );
+}
+
+function runSagaSimulationInternal(
+  graph: SagaGraph,
+  initialContext: Record<string, unknown>,
+  overrides: Record<string, NodeSimulationOverride>,
+  options: SimulationOptions | undefined,
+  depth: number,
+  activeChain: Set<string>
 ): SimulationResult {
   const nodeMap = new Map(graph.nodes.map((n) => [n.id, n]));
   const context: Record<string, unknown> = { ...initialContext };
@@ -104,6 +128,7 @@ export function runSagaSimulation(
   const visitedEdgeIds: string[] = [];
   const compensatedStates: string[] = [];
   const compensationStack: Array<{ sourceNode: SagaNode; compNode: SagaNode; edgeId: string }> = [];
+  const maxDepth = options?.maxDepth ?? 5;
 
   const startNode = graph.nodes.find((n) => n.type === 'StartState');
   if (!startNode) {
@@ -353,6 +378,127 @@ export function runSagaSimulation(
     const override = overrides[node.id] ?? { outcome: 'SU' };
     const compEdge = outgoing.find((e) => e.type === 'Compensation');
     const compNode = compEdge ? nodeMap.get(compEdge.target) : undefined;
+
+    // If this is a SubStateMachine with a registered graph and no forced FA/EXCEPTION override,
+    // recursively execute the sub-machine and bubble its trace steps & outcome back!
+    const subMachineTargetName =
+      node.type === 'SubStateMachine' ? node.stateMachineName?.trim() : undefined;
+    const subMachineGraph =
+      subMachineTargetName && options?.subMachineGraphs
+        ? options.subMachineGraphs[subMachineTargetName]
+        : undefined;
+
+    if (
+      node.type === 'SubStateMachine' &&
+      subMachineGraph &&
+      override.outcome === 'SU' &&
+      depth < maxDepth &&
+      !activeChain.has(subMachineGraph.meta.name)
+    ) {
+      steps.push({
+        stepNumber: steps.length + 1,
+        nodeId: node.id,
+        nodeName: node.name,
+        nodeType: node.type,
+        phase: 'forward',
+        status: 'SU',
+        detail: `進入子狀態機「${subMachineGraph.meta.name}」執行巢狀 Saga 流程。`,
+        detailEn: `Entering nested SubStateMachine "${subMachineGraph.meta.name}".`,
+        depth,
+        contextSnapshot: { ...context },
+      });
+
+      const nextChain = new Set(activeChain);
+      nextChain.add(subMachineGraph.meta.name);
+      const subResult = runSagaSimulationInternal(
+        subMachineGraph,
+        { ...context },
+        {},
+        options,
+        depth + 1,
+        nextChain
+      );
+
+      for (const subStep of subResult.steps) {
+        steps.push({
+          ...subStep,
+          stepNumber: steps.length + 1,
+          nodeId: node.id,
+          subMachineName: subStep.subMachineName ?? subMachineGraph.meta.name,
+          depth: subStep.depth ?? depth + 1,
+        });
+      }
+
+      const subSucceeded = subResult.finalStatus === 'SU';
+      applyOutputMapping(node, subSucceeded, context);
+
+      if (subSucceeded) {
+        if (compEdge && compNode) {
+          compensationStack.push({
+            sourceNode: node,
+            compNode,
+            edgeId: compEdge.id,
+          });
+        }
+        const nextEdge = outgoing.find((e) => e.type === 'Transition');
+        if (nextEdge) visitedEdgeIds.push(nextEdge.id);
+        steps.push({
+          stepNumber: steps.length + 1,
+          nodeId: node.id,
+          nodeName: node.name,
+          nodeType: node.type,
+          phase: 'forward',
+          status: 'SU',
+          detail: `子狀態機「${subMachineGraph.meta.name}」執行成功 (SU)${compNode ? `，已註冊補償任務 ${compNode.name}` : ''}。`,
+          detailEn: `SubStateMachine "${subMachineGraph.meta.name}" committed (SU)${compNode ? ` (registered compensation ${compNode.name})` : ''}.`,
+          edgeId: nextEdge?.id,
+          depth,
+          contextSnapshot: { ...context },
+        });
+        currentId = nextEdge?.target;
+        continue;
+      }
+
+      // Sub-machine failed or compensated -> check parent Catch boundary, else continue with FA output
+      const catchEdges = outgoing.filter((e) => e.type === 'Catch');
+      const matchedCatch = catchEdges[0];
+      if (matchedCatch) {
+        visitedEdgeIds.push(matchedCatch.id);
+        steps.push({
+          stepNumber: steps.length + 1,
+          nodeId: node.id,
+          nodeName: node.name,
+          nodeType: node.type,
+          phase: 'forward',
+          status: 'UN',
+          detail: `子狀態機「${subMachineGraph.meta.name}」以 ${subResult.finalStatus} 結束，觸發父層 Catch 並路由至 ${matchedCatch.target}。`,
+          detailEn: `SubStateMachine "${subMachineGraph.meta.name}" ended with ${subResult.finalStatus}; routed via parent Catch -> ${matchedCatch.target}.`,
+          edgeId: matchedCatch.id,
+          depth,
+          contextSnapshot: { ...context },
+        });
+        currentId = matchedCatch.target;
+        continue;
+      }
+
+      const nextEdge = outgoing.find((e) => e.type === 'Transition');
+      if (nextEdge) visitedEdgeIds.push(nextEdge.id);
+      steps.push({
+        stepNumber: steps.length + 1,
+        nodeId: node.id,
+        nodeName: node.name,
+        nodeType: node.type,
+        phase: 'forward',
+        status: 'FA',
+        detail: `子狀態機「${subMachineGraph.meta.name}」回傳 ${subResult.finalStatus} (false)。`,
+        detailEn: `SubStateMachine "${subMachineGraph.meta.name}" returned ${subResult.finalStatus} (false).`,
+        edgeId: nextEdge?.id,
+        depth,
+        contextSnapshot: { ...context },
+      });
+      currentId = nextEdge?.target;
+      continue;
+    }
 
     if (override.outcome === 'EXCEPTION') {
       const exName = override.exceptionClass || 'java.lang.RuntimeException';

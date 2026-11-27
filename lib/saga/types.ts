@@ -160,6 +160,7 @@ export interface SagaGraph {
   meta: SagaMachineMeta;
   nodes: SagaNode[];
   edges: SagaEdge[];
+  yamlTemplate?: string;
 }
 
 export type ValidationSeverity = 'error' | 'warning';
@@ -192,6 +193,8 @@ export interface SimulationStep {
   detail: string;
   detailEn: string;
   edgeId?: string;
+  subMachineName?: string;
+  depth?: number;
   contextSnapshot: Record<string, unknown>;
 }
 

@@ -8,6 +8,7 @@ export interface SagaTemplate {
   descriptionEn: string;
   defaultInputContext: Record<string, unknown>;
   json: SeataStateMachineJson;
+  subMachines?: SeataStateMachineJson[];
 }
 
 export const REDUCE_INVENTORY_AND_BALANCE_JSON: SeataStateMachineJson = {
@@ -244,7 +245,7 @@ export const ORDER_FULFILLMENT_SUBMACHINE_JSON: SeataStateMachineJson = {
       ],
       Next: 'OrderSucceed',
       style: {
-        bounds: { x: 786, y: 149, width: 184, height: 78 },
+        bounds: { x: 824, y: 149, width: 184, height: 78 },
       },
     },
     RefundSubPayment: {
@@ -256,7 +257,7 @@ export const ORDER_FULFILLMENT_SUBMACHINE_JSON: SeataStateMachineJson = {
       IsForCompensation: true,
       Input: ['$.[orderId]'],
       style: {
-        bounds: { x: 792, y: 310, width: 172, height: 74 },
+        bounds: { x: 830, y: 310, width: 172, height: 74 },
       },
     },
     RollbackAll: {
@@ -271,7 +272,7 @@ export const ORDER_FULFILLMENT_SUBMACHINE_JSON: SeataStateMachineJson = {
       Type: 'Succeed',
       Comment: 'Fulfillment complete',
       style: {
-        bounds: { x: 1038, y: 164, width: 48, height: 48 },
+        bounds: { x: 1076, y: 164, width: 48, height: 48 },
       },
     },
     OrderFailed: {
@@ -285,6 +286,230 @@ export const ORDER_FULFILLMENT_SUBMACHINE_JSON: SeataStateMachineJson = {
     },
   },
 };
+
+export const PAYMENT_SETTLEMENT_SUBMACHINE_JSON: SeataStateMachineJson = {
+  Name: 'paymentSettlementSubSaga',
+  Comment: 'Payment settlement sub-state machine with channel freeze, nested fraud check, and merchant payout',
+  StartState: 'FreezePaymentChannel',
+  Version: '1.2.0',
+  Type: 'STATE_LANG',
+  Persist: true,
+  RetryPersistModeUpdate: false,
+  CompensatePersistModeUpdate: false,
+  style: {
+    bounds: { x: 24, y: 120, width: 48, height: 48 },
+  },
+  States: {
+    FreezePaymentChannel: {
+      Type: 'ServiceTask',
+      Comment: 'Reserve payment authorization hold on customer funding source',
+      ServiceName: 'paymentGatewayService',
+      ServiceMethod: 'freezeFunds',
+      ServiceType: 'SpringBean',
+      ParameterTypes: ['java.lang.String', 'java.math.BigDecimal'],
+      CompensateState: 'UnfreezePaymentChannel',
+      Input: ['$.[orderId]', '$.[totalAmount]'],
+      Output: {
+        freezeToken: '$.#root',
+      },
+      Catch: [
+        {
+          Exceptions: ['java.lang.Throwable'],
+          Next: 'SubCompensationTrigger',
+        },
+      ],
+      Next: 'FraudSubCheck',
+      style: {
+        bounds: { x: 120, y: 107, width: 196, height: 74 },
+      },
+    },
+    UnfreezePaymentChannel: {
+      Type: 'ServiceTask',
+      Comment: 'Release frozen authorization hold',
+      ServiceName: 'paymentGatewayService',
+      ServiceMethod: 'unfreezeFunds',
+      ServiceType: 'SpringBean',
+      IsForCompensation: true,
+      Input: ['$.[orderId]'],
+      style: {
+        bounds: { x: 120, y: 294, width: 196, height: 74 },
+      },
+    },
+    FraudSubCheck: {
+      Type: 'SubStateMachine',
+      Comment: 'Nested Level-3 anti-fraud verification sub-workflow (double-click to inspect)',
+      StateMachineName: 'fraudVerificationSubSaga',
+      Input: ['$.[orderId]', '$.[userId]', '$.[totalAmount]'],
+      Output: {
+        fraudCheckResult: '$.#root',
+      },
+      Catch: [
+        {
+          Exceptions: ['java.lang.Throwable'],
+          Next: 'SubCompensationTrigger',
+        },
+      ],
+      Next: 'PaymentRouteChoice',
+      style: {
+        bounds: { x: 374, y: 105, width: 196, height: 78 },
+      },
+    },
+    PaymentRouteChoice: {
+      Type: 'Choice',
+      Comment: 'Verify fraud check passed before settling merchant account',
+      Choices: [
+        {
+          Expression: '[fraudCheckResult] == true',
+          Next: 'SettleMerchantFunds',
+        },
+      ],
+      Default: 'SubCompensationTrigger',
+      style: {
+        bounds: { x: 626, y: 100, width: 88, height: 88 },
+      },
+    },
+    SettleMerchantFunds: {
+      Type: 'ServiceTask',
+      Comment: 'Capture funds and credit merchant settlement ledger',
+      ServiceName: 'merchantLedgerService',
+      ServiceMethod: 'settle',
+      ServiceType: 'SpringBean',
+      ParameterTypes: ['java.lang.String', 'java.math.BigDecimal'],
+      CompensateState: 'ReverseMerchantSettlement',
+      Input: ['$.[orderId]', '$.[totalAmount]'],
+      Output: {
+        settlementId: '$.#root',
+      },
+      Catch: [
+        {
+          Exceptions: ['java.lang.Throwable'],
+          Next: 'SubCompensationTrigger',
+        },
+      ],
+      Next: 'PaymentSucceed',
+      style: {
+        bounds: { x: 828, y: 107, width: 196, height: 74 },
+      },
+    },
+    ReverseMerchantSettlement: {
+      Type: 'ServiceTask',
+      Comment: 'Reverse merchant ledger settlement entry',
+      ServiceName: 'merchantLedgerService',
+      ServiceMethod: 'reverseSettle',
+      ServiceType: 'SpringBean',
+      IsForCompensation: true,
+      Input: ['$.[orderId]'],
+      style: {
+        bounds: { x: 828, y: 294, width: 196, height: 74 },
+      },
+    },
+    SubCompensationTrigger: {
+      Type: 'CompensationTrigger',
+      Comment: 'Rollback frozen funds and partial settlement inside payment sub-machine',
+      Next: 'PaymentFailed',
+      style: {
+        bounds: { x: 492, y: 303, width: 56, height: 56 },
+      },
+    },
+    PaymentSucceed: {
+      Type: 'Succeed',
+      Comment: 'Payment settlement committed',
+      style: {
+        bounds: { x: 1086, y: 120, width: 48, height: 48 },
+      },
+    },
+    PaymentFailed: {
+      Type: 'Fail',
+      Comment: 'Payment settlement aborted and rolled back',
+      ErrorCode: 'PAYMENT_SETTLEMENT_FAILED',
+      Message: 'Payment settlement failed after compensation',
+      style: {
+        bounds: { x: 496, y: 432, width: 48, height: 48 },
+      },
+    },
+  },
+};
+
+export const FRAUD_VERIFICATION_SUBMACHINE_JSON: SeataStateMachineJson = {
+  Name: 'fraudVerificationSubSaga',
+  Comment: 'Level-3 anti-fraud screening sub-state machine',
+  StartState: 'CheckDeviceFingerprint',
+  Version: '1.0.0',
+  Type: 'STATE_LANG',
+  Persist: true,
+  RetryPersistModeUpdate: false,
+  CompensatePersistModeUpdate: false,
+  style: {
+    bounds: { x: 40, y: 150, width: 48, height: 48 },
+  },
+  States: {
+    CheckDeviceFingerprint: {
+      Type: 'ServiceTask',
+      Comment: 'Verify device trust token and IP reputation',
+      ServiceName: 'fraudShieldService',
+      ServiceMethod: 'verifyDevice',
+      ServiceType: 'SpringBean',
+      ParameterTypes: ['java.lang.String'],
+      Input: ['$.[userId]'],
+      Output: {
+        deviceTrusted: '$.#root',
+      },
+      Next: 'EvaluateFraudScore',
+      style: {
+        bounds: { x: 144, y: 137, width: 196, height: 74 },
+      },
+    },
+    EvaluateFraudScore: {
+      Type: 'ScriptTask',
+      Comment: 'Check amount against instant anti-fraud cap',
+      ScriptType: 'groovy',
+      ScriptContent: 'fraudPassed = totalAmount <= 30000; return fraudPassed',
+      Input: ['$.[totalAmount]'],
+      Output: {
+        fraudPassed: '$.#root',
+      },
+      Next: 'FraudDecision',
+      style: {
+        bounds: { x: 404, y: 137, width: 196, height: 74 },
+      },
+    },
+    FraudDecision: {
+      Type: 'Choice',
+      Comment: 'Approve or reject based on fraud score',
+      Choices: [
+        {
+          Expression: '[fraudPassed] == true',
+          Next: 'FraudApproved',
+        },
+      ],
+      Default: 'FraudRejected',
+      style: {
+        bounds: { x: 664, y: 130, width: 88, height: 88 },
+      },
+    },
+    FraudApproved: {
+      Type: 'Succeed',
+      Comment: 'Fraud screening approved',
+      style: {
+        bounds: { x: 846, y: 150, width: 48, height: 48 },
+      },
+    },
+    FraudRejected: {
+      Type: 'Fail',
+      Comment: 'Transaction flagged as high risk',
+      ErrorCode: 'FRAUD_RISK_REJECTED',
+      Message: 'Anti-fraud verification rejected this payment',
+      style: {
+        bounds: { x: 684, y: 308, width: 48, height: 48 },
+      },
+    },
+  },
+};
+
+export const BUILTIN_SUB_MACHINES_JSON: SeataStateMachineJson[] = [
+  PAYMENT_SETTLEMENT_SUBMACHINE_JSON,
+  FRAUD_VERIFICATION_SUBMACHINE_JSON,
+];
 
 export const BLANK_STATE_MACHINE_JSON: SeataStateMachineJson = {
   Name: 'customSagaWorkflow',
@@ -340,16 +565,20 @@ export const SAGA_TEMPLATES: SagaTemplate[] = [
   },
   {
     id: 'orderFulfillmentSaga',
-    labelZh: '訂單履約與子狀態機',
+    labelZh: '訂單履約與子狀態機 (多層範例)',
     labelEn: 'Order Fulfillment + SubStateMachine',
-    descriptionZh: '展示 ScriptTask 風控腳本、Choice 路由、SubStateMachine 支付子狀態機與全域補償觸發。',
-    descriptionEn: 'Demonstrates ScriptTask risk evaluation, Choice routing, SubStateMachine settlement, and rollback.',
+    descriptionZh: '展示 ScriptTask 風控、三層巢狀 SubStateMachine（支付結算 → 反詐欺驗證）雙擊鑽取與全域補償。',
+    descriptionEn: 'Demonstrates ScriptTask risk check, 3-level nested SubStateMachine drill-down (Payment -> Fraud Check), and rollback.',
     defaultInputContext: {
       orderId: 'ORD-90421',
       userId: 'USR-1024',
       totalAmount: 12800,
     },
     json: ORDER_FULFILLMENT_SUBMACHINE_JSON,
+    subMachines: [
+      PAYMENT_SETTLEMENT_SUBMACHINE_JSON,
+      FRAUD_VERIFICATION_SUBMACHINE_JSON,
+    ],
   },
   {
     id: 'blank',

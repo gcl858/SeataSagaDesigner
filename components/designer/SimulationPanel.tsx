@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Play, StepForward, RotateCcw, CheckCircle2, AlertTriangle, Undo2 } from 'lucide-react';
+import { Play, StepForward, RotateCcw, CheckCircle2, AlertTriangle, Undo2, Layers } from 'lucide-react';
 import {
   MockOutcome,
   NodeSimulationOverride,
@@ -215,8 +215,17 @@ export default function SimulationPanel({
             >
               {visibleSteps.map((step, idx) => {
                 const isSelected = activeStepIndex === idx;
+                const depth = step.depth ?? 0;
                 return (
-                  <li key={step.stepNumber}>
+                  <li
+                    key={step.stepNumber}
+                    style={depth > 0 ? { marginLeft: Math.min(depth, 3) * 12 } : undefined}
+                    className={
+                      depth > 0
+                        ? 'border-l-2 border-sky-300 dark:border-sky-700 pl-2'
+                        : undefined
+                    }
+                  >
                     <button
                       type="button"
                       onClick={() => onSelectStep(idx)}
@@ -226,6 +235,12 @@ export default function SimulationPanel({
                           : 'bg-slate-50/70 dark:bg-slate-950/50 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
                       }`}
                     >
+                      {step.subMachineName && (
+                        <div className="flex items-center gap-1 text-[10px] font-mono text-sky-700 dark:text-sky-400 mb-1">
+                          <Layers className="w-3 h-3 shrink-0" />
+                          <span className="truncate">{step.subMachineName}</span>
+                        </div>
+                      )}
                       <div className="flex items-center justify-between gap-2 mb-1">
                         <span className="inline-flex items-center gap-1.5 text-xs font-semibold font-mono text-slate-900 dark:text-slate-100">
                           {step.status === 'COMPENSATED' ? (

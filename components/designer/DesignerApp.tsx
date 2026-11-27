@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import {
   MockOutcome,
   NODE_DIMENSIONS,
@@ -11,28 +12,47 @@ import {
   SagaMachineMeta,
   SagaNode,
   SeataEdgeType,
-  SeataStateMachineJson,
   SeataStateType,
   SimulationResult,
 } from '@/lib/saga/types';
-import { SAGA_TEMPLATES } from '@/lib/saga/templates';
+import { BUILTIN_SUB_MACHINES_JSON, SAGA_TEMPLATES } from '@/lib/saga/templates';
 import {
   autoLayoutGraph,
   exportGraphToSvg,
-  parseSeataJsonToGraph,
   renameStateInGraph,
   serializeGraphToSeataJson,
   START_NODE_ID,
 } from '@/lib/saga/serializer';
+import {
+  parseSeataSourceToGraph,
+  renameStateInYamlTemplate,
+  serializeGraphToSeataYaml,
+} from '@/lib/saga/yaml';
+import {
+  commitActiveGraph,
+  createWorkspaceFromTemplate,
+  getActiveGraph,
+  getActiveHistory,
+  getActiveMachineName,
+  getParentFrame,
+  navigateToStackIndex,
+  openSubStateMachine,
+  redoActiveMachine,
+  SubMachineWorkspaceState,
+  undoActiveMachine,
+  updateActiveGraphTransient,
+} from '@/lib/saga/subMachines';
 import { validateSagaGraph } from '@/lib/saga/validator';
 import { runSagaSimulation } from '@/lib/saga/simulator';
-import { Locale } from '@/lib/saga/i18n';
+import { Locale, UI_COPY } from '@/lib/saga/i18n';
+import { SourceLocateTarget } from '@/lib/saga/sourceLocator';
 import TopHeader, { WorkspaceView } from './TopHeader';
 import WorkspaceToolbar from './WorkspaceToolbar';
+import SubMachineBreadcrumb from './SubMachineBreadcrumb';
 import ElementPalette, { InteractionMode } from './ElementPalette';
 import SagaCanvas from './SagaCanvas';
 import PropertiesPanel from './PropertiesPanel';
-import JsonEditorPanel from './JsonEditorPanel';
+import JsonEditorPanel, { SourceFormat } from './JsonEditorPanel';
 import SimulationPanel from './SimulationPanel';
 import ValidationDrawer from './ValidationDrawer';
 
@@ -132,11 +152,22 @@ function downloadBlob(filename: string, content: string, mimeType: string) {
 
 export default function DesignerApp() {
   const initialTemplate = SAGA_TEMPLATES[0];
-  const [graph, setGraph] = useState<SagaGraph>(() =>
-    parseSeataJsonToGraph(initialTemplate.json)
+  const [workspace, setWorkspace] = useState<SubMachineWorkspaceState>(() =>
+    createWorkspaceFromTemplate(
+      initialTemplate.json,
+      initialTemplate.subMachines,
+      BUILTIN_SUB_MACHINES_JSON
+    )
   );
-  const [past, setPast] = useState<SagaGraph[]>([]);
-  const [future, setFuture] = useState<SagaGraph[]>([]);
+  const graph = getActiveGraph(workspace);
+  const activeMachineName = getActiveMachineName(workspace);
+  const { past, future } = getActiveHistory(workspace);
+  const parentFrame = getParentFrame(workspace);
+
+  const availableMachineNames = useMemo(
+    () => new Set(Object.keys(workspace.registry)),
+    [workspace.registry]
+  );
 
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>(
     initialTemplate.id
@@ -145,7 +176,11 @@ export default function DesignerApp() {
   const [mode, setMode] = useState<InteractionMode>('select');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectionNonce, setSelectionNonce] = useState<number>(0);
+  const [sourceFormat, setSourceFormat] = useState<SourceFormat>('json');
   const [includeLayoutInJson, setIncludeLayoutInJson] = useState<boolean>(true);
+  const [paletteCollapsed, setPaletteCollapsed] = useState<boolean>(false);
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState<boolean>(false);
   const [validationOpen, setValidationOpen] = useState<boolean>(false);
   const [locale, setLocale] = useState<Locale>('zh-TW');
   const [darkMode, setDarkMode] = useState<boolean>(false);
@@ -178,13 +213,7 @@ export default function DesignerApp() {
 
   const commitGraph = useCallback(
     (updater: (prev: SagaGraph) => SagaGraph) => {
-      setGraph((prev) => {
-        const next = updater(prev);
-        if (next === prev) return prev;
-        setPast((p) => [...p.slice(-39), prev]);
-        setFuture([]);
-        return next;
-      });
+      setWorkspace((prev) => commitActiveGraph(prev, updater));
       setSimResult(null);
       setActiveSimStepIdx(null);
     },
@@ -192,26 +221,77 @@ export default function DesignerApp() {
   );
 
   const handleUndo = useCallback(() => {
-    setPast((p) => {
-      if (p.length === 0) return p;
-      const previous = p[p.length - 1];
-      setFuture((f) => [graph, ...f.slice(0, 39)]);
-      setGraph(previous);
-      return p.slice(0, -1);
-    });
-  }, [graph]);
+    setWorkspace((prev) => undoActiveMachine(prev));
+    setSimResult(null);
+    setActiveSimStepIdx(null);
+  }, []);
 
   const handleRedo = useCallback(() => {
-    setFuture((f) => {
-      if (f.length === 0) return f;
-      const next = f[0];
-      setPast((p) => [...p.slice(-39), graph]);
-      setGraph(next);
-      return f.slice(1);
-    });
-  }, [graph]);
+    setWorkspace((prev) => redoActiveMachine(prev));
+    setSimResult(null);
+    setActiveSimStepIdx(null);
+  }, []);
 
-  // Keyboard shortcuts (Undo / Redo / Delete)
+  const handleOpenSubStateMachine = useCallback(
+    (nodeId: string) => {
+      const result = openSubStateMachine(workspace, nodeId);
+      if (!result.ok) {
+        if (result.reason === 'cycle') {
+          showNotice(
+            locale === 'zh-TW'
+              ? `偵測到循環參考：不可遞迴進入「${result.targetName}」。`
+              : `Circular reference blocked: cannot recursively open "${result.targetName}".`
+          );
+        }
+        return;
+      }
+
+      setWorkspace(result.workspace);
+      setSelectedNodeId(null);
+      setSelectedEdgeId(null);
+      setSimResult(null);
+      setActiveSimStepIdx(null);
+      setMode('select');
+
+      showNotice(
+        result.created
+          ? locale === 'zh-TW'
+            ? `已自動建立並進入子狀態機「${result.targetName}」`
+            : `Created and opened sub-state machine "${result.targetName}"`
+          : locale === 'zh-TW'
+            ? `已進入子狀態機「${result.targetName}」`
+            : `Opened sub-state machine "${result.targetName}"`
+      );
+    },
+    [workspace, locale, showNotice]
+  );
+
+  const handleNavigateToStackIndex = useCallback(
+    (targetIndex: number) => {
+      const { workspace: nextWs, restoredNodeId } = navigateToStackIndex(
+        workspace,
+        targetIndex
+      );
+      if (nextWs === workspace) return;
+      setWorkspace(nextWs);
+      setSelectedNodeId(restoredNodeId);
+      setSelectedEdgeId(null);
+      if (restoredNodeId) {
+        setSelectionNonce((n) => n + 1);
+      }
+      setSimResult(null);
+      setActiveSimStepIdx(null);
+      setMode('select');
+    },
+    [workspace]
+  );
+
+  const handleReturnToParent = useCallback(() => {
+    if (workspace.navStack.length <= 1) return;
+    handleNavigateToStackIndex(workspace.navStack.length - 2);
+  }, [workspace.navStack.length, handleNavigateToStackIndex]);
+
+  // Keyboard shortcuts (Undo / Redo / Escape / Alt+Left to return to parent)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -230,15 +310,23 @@ export default function DesignerApp() {
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
         e.preventDefault();
         handleRedo();
+      } else if (e.altKey && e.key === 'ArrowLeft') {
+        if (workspace.navStack.length > 1) {
+          e.preventDefault();
+          handleReturnToParent();
+        }
       } else if (e.key === 'Escape') {
         setMode('select');
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleUndo, handleRedo]);
+  }, [handleUndo, handleRedo, handleReturnToParent, workspace.navStack.length]);
 
-  const validationIssues = useMemo(() => validateSagaGraph(graph), [graph]);
+  const validationIssues = useMemo(
+    () => validateSagaGraph(graph, { availableMachineNames }),
+    [graph, availableMachineNames]
+  );
   const errorCount = useMemo(
     () => validationIssues.filter((i) => i.severity === 'error').length,
     [validationIssues]
@@ -255,11 +343,23 @@ export default function DesignerApp() {
     return JSON.stringify(obj, null, 2);
   }, [graph, includeLayoutInJson]);
 
+  const serializedYamlText = useMemo(() => {
+    return serializeGraphToSeataYaml(graph, {
+      includeLayout: includeLayoutInJson,
+    });
+  }, [graph, includeLayoutInJson]);
+
   const handleSelectTemplate = (templateId: string) => {
     const tpl = SAGA_TEMPLATES.find((item) => item.id === templateId);
     if (!tpl) return;
     setSelectedTemplateId(templateId);
-    commitGraph(() => parseSeataJsonToGraph(tpl.json));
+    setWorkspace(
+      createWorkspaceFromTemplate(
+        tpl.json,
+        tpl.subMachines,
+        BUILTIN_SUB_MACHINES_JSON
+      )
+    );
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
     setSimInputText(JSON.stringify(tpl.defaultInputContext, null, 2));
@@ -302,10 +402,12 @@ export default function DesignerApp() {
           nodes: prev.nodes.map((n) => (n.id === nodeId ? { ...n, x, y } : n)),
         }));
       } else {
-        setGraph((prev) => ({
-          ...prev,
-          nodes: prev.nodes.map((n) => (n.id === nodeId ? { ...n, x, y } : n)),
-        }));
+        setWorkspace((prev) =>
+          updateActiveGraphTransient(prev, (g) => ({
+            ...g,
+            nodes: g.nodes.map((n) => (n.id === nodeId ? { ...n, x, y } : n)),
+          }))
+        );
       }
     },
     [commitGraph]
@@ -451,8 +553,20 @@ export default function DesignerApp() {
 
   const handleRenameNode = useCallback(
     (nodeId: string, newName: string) => {
-      commitGraph((prev) => renameStateInGraph(prev, nodeId, newName));
-      setSelectedNodeId(newName.trim());
+      const trimmed = newName.trim();
+      commitGraph((prev) => {
+        const renamed = renameStateInGraph(prev, nodeId, trimmed);
+        if (renamed === prev) return prev;
+        return {
+          ...renamed,
+          yamlTemplate: renameStateInYamlTemplate(
+            prev.yamlTemplate,
+            nodeId,
+            trimmed
+          ),
+        };
+      });
+      if (trimmed) setSelectedNodeId(trimmed);
     },
     [commitGraph]
   );
@@ -526,56 +640,76 @@ export default function DesignerApp() {
     );
   }, [commitGraph, locale, showNotice]);
 
-  const handleApplyJson = useCallback(
-    (raw: string): { ok: boolean; error?: string } => {
+  const handleApplySource = useCallback(
+    (
+      raw: string,
+      hint?: SourceFormat
+    ): { ok: boolean; error?: string; detectedFormat?: SourceFormat } => {
       try {
-        const parsed = JSON.parse(raw) as SeataStateMachineJson;
-        if (!parsed || typeof parsed !== 'object' || !parsed.States) {
-          return {
-            ok: false,
-            error: 'JSON must be a valid Seata StateMachine object containing "States".',
-          };
-        }
-        const nextGraph = parseSeataJsonToGraph(parsed);
-        commitGraph(() => nextGraph);
+        const { graph: nextGraph, detectedFormat } = parseSeataSourceToGraph(
+          raw,
+          hint
+        );
+        commitGraph((prev) => ({
+          ...nextGraph,
+          yamlTemplate:
+            detectedFormat === 'yaml'
+              ? nextGraph.yamlTemplate
+              : prev.yamlTemplate,
+        }));
         setSelectedNodeId(null);
         setSelectedEdgeId(null);
         setSelectedTemplateId('custom');
         showNotice(
           locale === 'zh-TW'
-            ? '已成功同步 JSON 至視覺畫布。'
-            : 'Synced JSON to visual canvas.'
+            ? `已成功同步 ${detectedFormat.toUpperCase()} 至視覺畫布。`
+            : `Synced ${detectedFormat.toUpperCase()} to visual canvas.`
         );
-        return { ok: true };
+        return { ok: true, detectedFormat };
       } catch (err) {
         return {
           ok: false,
-          error: err instanceof Error ? err.message : 'Invalid JSON syntax',
+          error: err instanceof Error ? err.message : 'Invalid syntax',
         };
       }
     },
     [commitGraph, locale, showNotice]
   );
 
-  const handleImportJsonFile = useCallback(
-    (text: string) => {
-      const res = handleApplyJson(text);
-      if (!res.ok) {
+  const handleImportFile = useCallback(
+    (text: string, filename: string) => {
+      const lower = filename.toLowerCase();
+      const hint: SourceFormat | undefined =
+        lower.endsWith('.yaml') || lower.endsWith('.yml')
+          ? 'yaml'
+          : lower.endsWith('.json')
+            ? 'json'
+            : undefined;
+      const res = handleApplySource(text, hint);
+      if (res.ok && res.detectedFormat) {
+        setSourceFormat(res.detectedFormat);
+      } else if (!res.ok) {
         showNotice(`Import failed: ${res.error}`);
       }
     },
-    [handleApplyJson, showNotice]
+    [handleApplySource, showNotice]
   );
 
   const handleExportJson = useCallback(() => {
     const filename = `${graph.meta.name || 'seata-saga-statemachine'}.json`;
     downloadBlob(filename, serializedJsonText, 'application/json');
     showNotice(
-      locale === 'zh-TW'
-        ? `已匯出 ${filename}`
-        : `Exported ${filename}`
+      locale === 'zh-TW' ? `已匯出 ${filename}` : `Exported ${filename}`
     );
   }, [graph.meta.name, serializedJsonText, locale, showNotice]);
+
+  const handleExportYaml = useCallback(() => {
+    const filename = `${graph.meta.name || 'seata-saga-statemachine'}.yaml`;
+    downloadBlob(filename, serializedYamlText, 'application/x-yaml;charset=utf-8');
+    showNotice(
+      locale === 'zh-TW' ? `已匯出 ${filename}` : `Exported ${filename}`
+    );
+  }, [graph.meta.name, serializedYamlText, locale, showNotice]);
 
   const handleExportSvg = useCallback(() => {
     const svg = exportGraphToSvg(graph);
@@ -607,7 +741,9 @@ export default function DesignerApp() {
   const handleRunSimulation = () => {
     const ctx = parseSimContext();
     if (!ctx) return;
-    const res = runSagaSimulation(graph, ctx, simOverrides);
+    const res = runSagaSimulation(graph, ctx, simOverrides, {
+      subMachineGraphs: workspace.registry,
+    });
     setSimResult(res);
     setActiveSimStepIdx(res.steps.length - 1);
   };
@@ -616,7 +752,9 @@ export default function DesignerApp() {
     if (!simResult) {
       const ctx = parseSimContext();
       if (!ctx) return;
-      const res = runSagaSimulation(graph, ctx, simOverrides);
+      const res = runSagaSimulation(graph, ctx, simOverrides, {
+        subMachineGraphs: workspace.registry,
+      });
       setSimResult(res);
       setActiveSimStepIdx(0);
       return;
@@ -653,6 +791,27 @@ export default function DesignerApp() {
     [graph.edges, selectedEdgeId]
   );
 
+  const sourceLocateTarget = useMemo<SourceLocateTarget | null>(() => {
+    if (selectedNode) {
+      return {
+        kind: 'node',
+        nodeId: selectedNode.id,
+        nodeName: selectedNode.name,
+      };
+    }
+    if (selectedEdge) {
+      return {
+        kind: 'edge',
+        edgeId: selectedEdge.id,
+        source: selectedEdge.source,
+        target: selectedEdge.target,
+        edgeType: selectedEdge.type,
+        expression: selectedEdge.expression,
+      };
+    }
+    return null;
+  }, [selectedNode, selectedEdge]);
+
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-950">
       <TopHeader
@@ -680,7 +839,8 @@ export default function DesignerApp() {
         onUndo={handleUndo}
         onRedo={handleRedo}
         onAutoLayout={handleAutoLayout}
-        onImportJsonFile={handleImportJsonFile}
+        onImportFile={handleImportFile}
+        onExportYaml={handleExportYaml}
         onExportSvg={handleExportSvg}
         errorCount={errorCount}
         warningCount={warningCount}
@@ -694,12 +854,21 @@ export default function DesignerApp() {
         onToggleDarkMode={() => setDarkMode((d) => !d)}
       />
 
+      <SubMachineBreadcrumb
+        navStack={workspace.navStack}
+        locale={locale}
+        onNavigateToIndex={handleNavigateToStackIndex}
+        onReturnToParent={handleReturnToParent}
+      />
+
       {/* Main Workspace Area */}
       <main className="flex-1 flex min-h-0 overflow-hidden relative">
         {/* Left Element Palette (visible in canvas, split, simulate) */}
         {activeView !== 'json' && (
           <ElementPalette
             mode={mode}
+            collapsed={paletteCollapsed}
+            onToggleCollapse={() => setPaletteCollapsed((prev) => !prev)}
             onChangeMode={setMode}
             onAddNode={(type) => handleAddNode(type)}
             locale={locale}
@@ -711,6 +880,8 @@ export default function DesignerApp() {
           <div className="flex-1 flex flex-col min-w-0 min-h-0">
             <SagaCanvas
               graph={graph}
+              activeMachineKey={`${workspace.navStack.length}:${activeMachineName}`}
+              availableMachineNames={availableMachineNames}
               selectedNodeId={selectedNodeId}
               selectedEdgeId={selectedEdgeId}
               mode={mode}
@@ -723,10 +894,12 @@ export default function DesignerApp() {
               onSelectNode={(id) => {
                 setSelectedNodeId(id);
                 setSelectedEdgeId(null);
+                if (id) setSelectionNonce((n) => n + 1);
               }}
               onSelectEdge={(id) => {
                 setSelectedEdgeId(id);
                 setSelectedNodeId(null);
+                if (id) setSelectionNonce((n) => n + 1);
               }}
               onMoveNode={handleMoveNode}
               onDropNewNode={(type, x, y) => handleAddNode(type, x, y)}
@@ -734,6 +907,7 @@ export default function DesignerApp() {
               onQuickAppendNode={handleQuickAppendNode}
               onDeleteNode={handleDeleteNode}
               onChangeMode={setMode}
+              onOpenSubStateMachine={handleOpenSubStateMachine}
             />
 
             {validationOpen && (
@@ -754,63 +928,131 @@ export default function DesignerApp() {
           </div>
         )}
 
-        {/* Right Panel per active view */}
-        {activeView === 'canvas' && (
-          <PropertiesPanel
-            graph={graph}
-            selectedNode={selectedNode}
-            selectedEdge={selectedEdge}
-            locale={locale}
-            onUpdateMeta={handleUpdateMeta}
-            onUpdateNode={handleUpdateNode}
-            onRenameNode={handleRenameNode}
-            onDeleteNode={handleDeleteNode}
-            onUpdateEdge={handleUpdateEdge}
-            onDeleteEdge={handleDeleteEdge}
-            onSetCompensateState={handleSetCompensateState}
-          />
-        )}
+        {/* Right Panel per active view (collapsible via left-edge handle) */}
+        {activeView !== 'json' && (
+          <div className="relative flex shrink-0 h-full z-20">
+            <button
+              type="button"
+              onClick={() => setRightPanelCollapsed((prev) => !prev)}
+              aria-controls="saga-right-panel"
+              aria-expanded={!rightPanelCollapsed}
+              aria-label={
+                rightPanelCollapsed
+                  ? UI_COPY[locale].expandRightPanel
+                  : UI_COPY[locale].collapseRightPanel
+              }
+              title={
+                rightPanelCollapsed
+                  ? UI_COPY[locale].expandRightPanel
+                  : UI_COPY[locale].collapseRightPanel
+              }
+              className="absolute top-1/2 right-full -translate-y-1/2 z-30 w-6 h-14 flex items-center justify-center rounded-l-lg bg-white dark:bg-slate-900 border border-r-0 border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:text-blue-700 dark:hover:text-blue-400 hover:bg-slate-50 dark:hover:bg-slate-800 shadow-xs transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+            >
+              {rightPanelCollapsed ? (
+                <ChevronLeft className="w-4 h-4" />
+              ) : (
+                <ChevronRight className="w-4 h-4" />
+              )}
+            </button>
 
-        {activeView === 'split' && (
-          <div className="w-[460px] shrink-0 h-full">
-            <JsonEditorPanel
-              jsonText={serializedJsonText}
-              includeLayout={includeLayoutInJson}
-              onToggleIncludeLayout={setIncludeLayoutInJson}
-              onApplyJson={handleApplyJson}
-              locale={locale}
-            />
+            <div
+              id="saga-right-panel"
+              aria-hidden={rightPanelCollapsed}
+              className={`h-full overflow-hidden flex transition-[width] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                rightPanelCollapsed
+                  ? 'w-0 pointer-events-none'
+                  : activeView === 'canvas'
+                    ? 'w-80'
+                    : activeView === 'split'
+                      ? 'w-[460px]'
+                      : 'w-96'
+              }`}
+            >
+              {activeView === 'canvas' && (
+                <PropertiesPanel
+                  graph={graph}
+                  selectedNode={selectedNode}
+                  selectedEdge={selectedEdge}
+                  locale={locale}
+                  machineRegistry={workspace.registry}
+                  parentContext={parentFrame}
+                  onUpdateMeta={handleUpdateMeta}
+                  onUpdateNode={handleUpdateNode}
+                  onRenameNode={handleRenameNode}
+                  onDeleteNode={handleDeleteNode}
+                  onUpdateEdge={handleUpdateEdge}
+                  onDeleteEdge={handleDeleteEdge}
+                  onSetCompensateState={handleSetCompensateState}
+                  onOpenSubStateMachine={handleOpenSubStateMachine}
+                  onReturnToParent={handleReturnToParent}
+                />
+              )}
+
+              {activeView === 'split' && (
+                <div className="w-[460px] shrink-0 h-full">
+                  <JsonEditorPanel
+                    format={sourceFormat}
+                    onChangeFormat={setSourceFormat}
+                    sourceText={
+                      sourceFormat === 'yaml'
+                        ? serializedYamlText
+                        : serializedJsonText
+                    }
+                    includeLayout={includeLayoutInJson}
+                    onToggleIncludeLayout={setIncludeLayoutInJson}
+                    onApplySource={handleApplySource}
+                    onExportCurrent={
+                      sourceFormat === 'yaml'
+                        ? handleExportYaml
+                        : handleExportJson
+                    }
+                    locateTarget={sourceLocateTarget}
+                    locateNonce={selectionNonce}
+                    locale={locale}
+                  />
+                </div>
+              )}
+
+              {activeView === 'simulate' && (
+                <SimulationPanel
+                  graph={graph}
+                  inputContextText={simInputText}
+                  inputContextError={simInputError}
+                  overrides={simOverrides}
+                  result={simResult}
+                  activeStepIndex={activeSimStepIdx}
+                  locale={locale}
+                  onChangeInputContext={setSimInputText}
+                  onChangeOverride={handleChangeOverride}
+                  onRunAll={handleRunSimulation}
+                  onStepNext={handleStepSimulation}
+                  onReset={handleResetSimulation}
+                  onSelectStep={(idx) => setActiveSimStepIdx(idx)}
+                />
+              )}
+            </div>
           </div>
         )}
 
         {activeView === 'json' && (
           <div className="flex-1 h-full">
             <JsonEditorPanel
-              jsonText={serializedJsonText}
+              format={sourceFormat}
+              onChangeFormat={setSourceFormat}
+              sourceText={
+                sourceFormat === 'yaml'
+                  ? serializedYamlText
+                  : serializedJsonText
+              }
               includeLayout={includeLayoutInJson}
               onToggleIncludeLayout={setIncludeLayoutInJson}
-              onApplyJson={handleApplyJson}
+              onApplySource={handleApplySource}
+              onExportCurrent={
+                sourceFormat === 'yaml' ? handleExportYaml : handleExportJson
+              }
               locale={locale}
             />
           </div>
-        )}
-
-        {activeView === 'simulate' && (
-          <SimulationPanel
-            graph={graph}
-            inputContextText={simInputText}
-            inputContextError={simInputError}
-            overrides={simOverrides}
-            result={simResult}
-            activeStepIndex={activeSimStepIdx}
-            locale={locale}
-            onChangeInputContext={setSimInputText}
-            onChangeOverride={handleChangeOverride}
-            onRunAll={handleRunSimulation}
-            onStepNext={handleStepSimulation}
-            onReset={handleResetSimulation}
-            onSelectStep={(idx) => setActiveSimStepIdx(idx)}
-          />
         )}
 
         {/* Transient subtle toast feedback */}

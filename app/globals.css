@@ -21,3 +21,66 @@
 .dark .saga-canvas-grid {
   background-image: radial-gradient(circle, rgba(71, 85, 105, 0.5) 1px, transparent 1px);
 }
+
+@keyframes saga-block-flash {
+  0% {
+    background-color: rgba(37, 99, 235, 0.14);
+    box-shadow: inset 3px 0 0 0 rgba(37, 99, 235, 0.65);
+  }
+  22% {
+    background-color: rgba(37, 99, 235, 0.36);
+    box-shadow: inset 3px 0 0 0 rgba(37, 99, 235, 0.98);
+  }
+  42% {
+    background-color: rgba(37, 99, 235, 0.1);
+    box-shadow: inset 3px 0 0 0 rgba(37, 99, 235, 0.45);
+  }
+  65% {
+    background-color: rgba(37, 99, 235, 0.28);
+    box-shadow: inset 3px 0 0 0 rgba(37, 99, 235, 0.92);
+  }
+  100% {
+    background-color: rgba(37, 99, 235, 0.08);
+    box-shadow: inset 2px 0 0 0 rgba(37, 99, 235, 0.55);
+  }
+}
+
+@keyframes saga-block-flash-dark {
+  0% {
+    background-color: rgba(59, 130, 246, 0.18);
+    box-shadow: inset 3px 0 0 0 rgba(96, 165, 250, 0.7);
+  }
+  22% {
+    background-color: rgba(59, 130, 246, 0.42);
+    box-shadow: inset 3px 0 0 0 rgba(96, 165, 250, 1);
+  }
+  42% {
+    background-color: rgba(59, 130, 246, 0.12);
+    box-shadow: inset 3px 0 0 0 rgba(96, 165, 250, 0.5);
+  }
+  65% {
+    background-color: rgba(59, 130, 246, 0.32);
+    box-shadow: inset 3px 0 0 0 rgba(96, 165, 250, 0.95);
+  }
+  100% {
+    background-color: rgba(59, 130, 246, 0.13);
+    box-shadow: inset 2px 0 0 0 rgba(96, 165, 250, 0.65);
+  }
+}
+
+.saga-code-flash {
+  animation: saga-block-flash 1.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.dark .saga-code-flash {
+  animation: saga-block-flash-dark 1.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .saga-code-flash,
+  .dark .saga-code-flash {
+    animation: none;
+    background-color: rgba(37, 99, 235, 0.15);
+    box-shadow: inset 2px 0 0 0 rgba(37, 99, 235, 0.75);
+  }
+}

@@ -14,6 +14,8 @@ import {
   Undo2,
   CheckCircle2,
   XCircle,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { SeataStateType } from '@/lib/saga/types';
 import { Locale, UI_COPY } from '@/lib/saga/i18n';
@@ -22,6 +24,8 @@ export type InteractionMode = 'select' | 'connect' | 'compensate' | 'catch';
 
 interface ElementPaletteProps {
   mode: InteractionMode;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
   onChangeMode: (mode: InteractionMode) => void;
   onAddNode: (type: SeataStateType) => void;
   locale: Locale;
@@ -105,6 +109,8 @@ const PALETTE_ITEMS: PaletteItem[] = [
 
 export default function ElementPalette({
   mode,
+  collapsed,
+  onToggleCollapse,
   onChangeMode,
   onAddNode,
   locale,
@@ -131,10 +137,18 @@ export default function ElementPalette({
   };
 
   return (
-    <aside
-      aria-label={t.paletteTitle}
-      className="w-56 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col shrink-0 overflow-y-auto select-none"
-    >
+    <div className="relative flex shrink-0 h-full z-20">
+      <aside
+        id="saga-element-palette"
+        aria-label={t.paletteTitle}
+        aria-hidden={collapsed}
+        className={`h-full bg-white dark:bg-slate-900 flex flex-col overflow-hidden select-none transition-[width] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+          collapsed
+            ? 'w-0 border-r-0 pointer-events-none'
+            : 'w-56 border-r border-slate-200 dark:border-slate-800'
+        }`}
+      >
+        <div className="w-56 h-full flex flex-col overflow-y-auto">
       {/* Tools Section */}
       <div className="p-3 border-b border-slate-200 dark:border-slate-800">
         <h2 className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2 px-1">
@@ -202,6 +216,25 @@ export default function ElementPalette({
           })}
         </div>
       </div>
-    </aside>
+        </div>
+      </aside>
+
+      {/* Edge-mounted collapse/expand handle tab */}
+      <button
+        type="button"
+        onClick={onToggleCollapse}
+        aria-controls="saga-element-palette"
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? t.expandPalette : t.collapsePalette}
+        title={collapsed ? t.expandPalette : t.collapsePalette}
+        className="absolute top-1/2 left-full -translate-y-1/2 z-30 w-6 h-14 flex items-center justify-center rounded-r-lg bg-white dark:bg-slate-900 border border-l-0 border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:text-blue-700 dark:hover:text-blue-400 hover:bg-slate-50 dark:hover:bg-slate-800 shadow-xs transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+      >
+        {collapsed ? (
+          <ChevronRight className="w-4 h-4" />
+        ) : (
+          <ChevronLeft className="w-4 h-4" />
+        )}
+      </button>
+    </div>
   );
 }
