@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import {
@@ -19,6 +19,7 @@ import { BUILTIN_SUB_MACHINES_JSON, SAGA_TEMPLATES } from '@/lib/saga/templates'
 import {
   autoLayoutGraph,
   exportGraphToSvg,
+  parseSeataJsonToGraph,
   renameStateInGraph,
   serializeGraphToSeataJson,
   START_NODE_ID,
@@ -45,7 +46,15 @@ import {
 import { validateSagaGraph } from '@/lib/saga/validator';
 import { runSagaSimulation } from '@/lib/saga/simulator';
 import { Locale, UI_COPY } from '@/lib/saga/i18n';
-import { SourceLocateTarget } from '@/lib/saga/sourceLocator';
+import {
+  locateSelectionInSource,
+  SourceLocateTarget,
+} from '@/lib/saga/sourceLocator';
+import {
+  createHostBridge,
+  HostBridgeClient,
+  HostDiagnosticItem,
+} from '@/lib/saga/hostBridge';
 import TopHeader, { WorkspaceView } from './TopHeader';
 import WorkspaceToolbar from './WorkspaceToolbar';
 import SubMachineBreadcrumb from './SubMachineBreadcrumb';
@@ -55,6 +64,7 @@ import PropertiesPanel from './PropertiesPanel';
 import JsonEditorPanel, { SourceFormat } from './JsonEditorPanel';
 import SimulationPanel from './SimulationPanel';
 import ValidationDrawer from './ValidationDrawer';
+import VsCodeExtensionModal from './VsCodeExtensionModal';
 
 function generateUniqueStateName(
   nodes: SagaNode[],
@@ -185,6 +195,15 @@ export default function DesignerApp() {
   const [locale, setLocale] = useState<Locale>('zh-TW');
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [vscodeModalOpen, setVscodeModalOpen] = useState<boolean>(false);
+  const [embeddedFile, setEmbeddedFile] = useState<{
+    uri: string;
+    fileName: string;
+    format: SourceFormat;
+  } | null>(null);
+  const hostBridgeRef = useRef<HostBridgeClient | null>(null);
+  const lastHostContentRef = useRef<string | null>(null);
+  const hasInitializedEmbeddedLayoutRef = useRef<boolean>(false);
 
   // Simulation state
   const [simInputText, setSimInputText] = useState<string>(() =>
@@ -203,6 +222,101 @@ export default function DesignerApp() {
     if (darkMode) root.classList.add('dark');
     else root.classList.remove('dark');
   }, [darkMode]);
+
+  // Dual-runtime Host Bridge (VS Code Webview & Embedded Iframe)
+  useEffect(() => {
+    const bridge = createHostBridge();
+    hostBridgeRef.current = bridge;
+    if (!bridge.isEmbedded) return;
+
+    const unsubscribe = bridge.subscribe((msg) => {
+      if (msg.type === 'host:themeChanged') {
+        setDarkMode(msg.theme === 'dark');
+        return;
+      }
+      if (msg.type === 'host:localeChanged') {
+        setLocale(msg.locale);
+        return;
+      }
+      if (msg.type === 'host:loadDocument') {
+        if (msg.theme) setDarkMode(msg.theme === 'dark');
+        if (msg.locale) setLocale(msg.locale);
+        if (!hasInitializedEmbeddedLayoutRef.current) {
+          hasInitializedEmbeddedLayoutRef.current = true;
+          if (typeof window !== 'undefined' && window.innerWidth < 1100) {
+            setPaletteCollapsed(true);
+          }
+        }
+        lastHostContentRef.current = msg.content;
+        setSourceFormat(msg.format);
+        setEmbeddedFile({
+          uri: msg.uri,
+          fileName: msg.fileName,
+          format: msg.format,
+        });
+
+        try {
+          const parsedRoot = parseSeataSourceToGraph(msg.content, msg.format);
+          const rootGraph = parsedRoot.graph;
+          const rootName = rootGraph.meta.name || 'seataStateMachine';
+
+          const nextRegistry: Record<string, SagaGraph> = {};
+          for (const builtinJson of BUILTIN_SUB_MACHINES_JSON) {
+            const g = parseSeataJsonToGraph(builtinJson);
+            nextRegistry[g.meta.name] = g;
+          }
+          if (Array.isArray(msg.subMachines)) {
+            for (const sub of msg.subMachines) {
+              try {
+                const subParsed = parseSeataSourceToGraph(
+                  sub.content,
+                  sub.format
+                );
+                const subKey = subParsed.graph.meta.name || sub.name;
+                nextRegistry[subKey] = subParsed.graph;
+              } catch {
+                // Skip invalid workspace sub-machine files cleanly
+              }
+            }
+          }
+          nextRegistry[rootName] = rootGraph;
+
+          setWorkspace((prev) => {
+            const mergedRegistry: Record<string, SagaGraph> = {
+              ...prev.registry,
+              ...nextRegistry,
+            };
+            const keepStack =
+              prev.navStack.length > 0 &&
+              prev.navStack[0].machineName === rootName &&
+              prev.navStack.every((frame) =>
+                Boolean(mergedRegistry[frame.machineName])
+              );
+            return {
+              registry: mergedRegistry,
+              historyByMachine: {
+                ...prev.historyByMachine,
+                [rootName]: prev.historyByMachine[rootName] ?? {
+                  past: [],
+                  future: [],
+                },
+              },
+              navStack: keepStack
+                ? prev.navStack
+                : [{ machineName: rootName }],
+            };
+          });
+        } catch {
+          // Ignore transient syntax errors while user is actively typing in VS Code
+        }
+      }
+    });
+
+    bridge.send({ type: 'designer:ready' });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   const showNotice = useCallback((msg: string) => {
     setStatusMessage(msg);
@@ -253,6 +367,31 @@ export default function DesignerApp() {
       setActiveSimStepIdx(null);
       setMode('select');
 
+      if (result.created && hostBridgeRef.current?.isEmbedded) {
+        const createdGraph = result.workspace.registry[result.targetName];
+        if (createdGraph) {
+          const createdContent =
+            sourceFormat === 'yaml'
+              ? serializeGraphToSeataYaml(createdGraph, {
+                  includeLayout: includeLayoutInJson,
+                })
+              : JSON.stringify(
+                  serializeGraphToSeataJson(createdGraph, {
+                    includeLayout: includeLayoutInJson,
+                  }),
+                  null,
+                  2
+                );
+          hostBridgeRef.current.send({
+            type: 'designer:updateSubMachine',
+            machineName: result.targetName,
+            content: createdContent,
+            format: sourceFormat,
+            created: true,
+          });
+        }
+      }
+
       showNotice(
         result.created
           ? locale === 'zh-TW'
@@ -263,7 +402,7 @@ export default function DesignerApp() {
             : `Opened sub-state machine "${result.targetName}"`
       );
     },
-    [workspace, locale, showNotice]
+    [workspace, locale, showNotice, sourceFormat, includeLayoutInJson]
   );
 
   const handleNavigateToStackIndex = useCallback(
@@ -697,7 +836,16 @@ export default function DesignerApp() {
 
   const handleExportJson = useCallback(() => {
     const filename = `${graph.meta.name || 'seata-saga-statemachine'}.json`;
-    downloadBlob(filename, serializedJsonText, 'application/json');
+    if (hostBridgeRef.current?.isEmbedded) {
+      hostBridgeRef.current.send({
+        type: 'designer:exportFile',
+        fileName: filename,
+        content: serializedJsonText,
+        mimeType: 'application/json',
+      });
+    } else {
+      downloadBlob(filename, serializedJsonText, 'application/json');
+    }
     showNotice(
       locale === 'zh-TW' ? `已匯出 ${filename}` : `Exported ${filename}`
     );
@@ -705,7 +853,20 @@ export default function DesignerApp() {
 
   const handleExportYaml = useCallback(() => {
     const filename = `${graph.meta.name || 'seata-saga-statemachine'}.yaml`;
-    downloadBlob(filename, serializedYamlText, 'application/x-yaml;charset=utf-8');
+    if (hostBridgeRef.current?.isEmbedded) {
+      hostBridgeRef.current.send({
+        type: 'designer:exportFile',
+        fileName: filename,
+        content: serializedYamlText,
+        mimeType: 'application/x-yaml;charset=utf-8',
+      });
+    } else {
+      downloadBlob(
+        filename,
+        serializedYamlText,
+        'application/x-yaml;charset=utf-8'
+      );
+    }
     showNotice(
       locale === 'zh-TW' ? `已匯出 ${filename}` : `Exported ${filename}`
     );
@@ -714,7 +875,16 @@ export default function DesignerApp() {
   const handleExportSvg = useCallback(() => {
     const svg = exportGraphToSvg(graph);
     const filename = `${graph.meta.name || 'seata-saga-statemachine'}.svg`;
-    downloadBlob(filename, svg, 'image/svg+xml');
+    if (hostBridgeRef.current?.isEmbedded) {
+      hostBridgeRef.current.send({
+        type: 'designer:exportFile',
+        fileName: filename,
+        content: svg,
+        mimeType: 'image/svg+xml',
+      });
+    } else {
+      downloadBlob(filename, svg, 'image/svg+xml');
+    }
     showNotice(
       locale === 'zh-TW'
         ? `已匯出向量圖 ${filename}`
@@ -812,6 +982,125 @@ export default function DesignerApp() {
     return null;
   }, [selectedNode, selectedEdge]);
 
+  const activeSourceText =
+    sourceFormat === 'yaml' ? serializedYamlText : serializedJsonText;
+
+  // Outbound VS Code Host sync: edited document / sub-machine (debounced, loop-safe)
+  useEffect(() => {
+    if (!embeddedFile || !hostBridgeRef.current?.isEmbedded) return;
+    if (activeSourceText === lastHostContentRef.current) return;
+
+    const isRootMachine = workspace.navStack.length === 1;
+    const machineName = graph.meta.name || activeMachineName;
+    const timer = window.setTimeout(() => {
+      if (!hostBridgeRef.current?.isEmbedded) return;
+      lastHostContentRef.current = activeSourceText;
+      if (isRootMachine) {
+        hostBridgeRef.current.send({
+          type: 'designer:updateDocument',
+          content: activeSourceText,
+          format: sourceFormat,
+          machineName,
+        });
+      } else {
+        hostBridgeRef.current.send({
+          type: 'designer:updateSubMachine',
+          machineName,
+          content: activeSourceText,
+          format: sourceFormat,
+        });
+      }
+    }, 240);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    embeddedFile,
+    activeSourceText,
+    sourceFormat,
+    workspace.navStack.length,
+    graph.meta.name,
+    activeMachineName,
+  ]);
+
+  // Outbound VS Code Host sync: Problems panel diagnostics
+  useEffect(() => {
+    if (!embeddedFile || !hostBridgeRef.current?.isEmbedded) return;
+    const diagnostics: HostDiagnosticItem[] = validationIssues.map((issue) => {
+      let range = null;
+      if (issue.nodeId) {
+        const node = graph.nodes.find((n) => n.id === issue.nodeId);
+        if (node) {
+          range = locateSelectionInSource(activeSourceText, sourceFormat, {
+            kind: 'node',
+            nodeId: node.id,
+            nodeName: node.name,
+          });
+        }
+      } else if (issue.edgeId) {
+        const edge = graph.edges.find((e) => e.id === issue.edgeId);
+        if (edge) {
+          range = locateSelectionInSource(activeSourceText, sourceFormat, {
+            kind: 'edge',
+            edgeId: edge.id,
+            source: edge.source,
+            target: edge.target,
+            edgeType: edge.type,
+            expression: edge.expression,
+          });
+        }
+      }
+      return {
+        severity: issue.severity,
+        code: issue.code,
+        message: locale === 'zh-TW' ? issue.message : issue.messageEn,
+        startLine: range?.startLine ?? 1,
+        endLine: range?.endLine ?? 1,
+      };
+    });
+    hostBridgeRef.current.send({
+      type: 'designer:diagnostics',
+      diagnostics,
+    });
+  }, [
+    embeddedFile,
+    validationIssues,
+    graph.nodes,
+    graph.edges,
+    activeSourceText,
+    sourceFormat,
+    locale,
+  ]);
+
+  // Outbound VS Code Host sync: reveal clicked node/edge in side-by-side text editor
+  useEffect(() => {
+    if (
+      !embeddedFile ||
+      !hostBridgeRef.current?.isEmbedded ||
+      !sourceLocateTarget ||
+      selectionNonce <= 0
+    ) {
+      return;
+    }
+    const range = locateSelectionInSource(
+      activeSourceText,
+      sourceFormat,
+      sourceLocateTarget
+    );
+    if (!range) return;
+    hostBridgeRef.current.send({
+      type: 'designer:revealSource',
+      startLine: range.startLine,
+      endLine: range.endLine,
+      label: range.label,
+    });
+  }, [
+    embeddedFile,
+    sourceLocateTarget,
+    selectionNonce,
+    activeSourceText,
+    sourceFormat,
+  ]);
+
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-950">
       <TopHeader
@@ -852,6 +1141,8 @@ export default function DesignerApp() {
         }
         darkMode={darkMode}
         onToggleDarkMode={() => setDarkMode((d) => !d)}
+        embeddedFileName={embeddedFile?.fileName ?? null}
+        onOpenVsCodeModal={() => setVscodeModalOpen(true)}
       />
 
       <SubMachineBreadcrumb
@@ -1071,6 +1362,12 @@ export default function DesignerApp() {
           )}
         </AnimatePresence>
       </main>
+
+      <VsCodeExtensionModal
+        open={vscodeModalOpen}
+        onClose={() => setVscodeModalOpen(false)}
+        locale={locale}
+      />
     </div>
   );
 }

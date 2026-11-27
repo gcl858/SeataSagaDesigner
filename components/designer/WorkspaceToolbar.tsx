@@ -13,6 +13,7 @@ import {
   Sun,
   Moon,
   Languages,
+  Blocks,
 } from 'lucide-react';
 import { SAGA_TEMPLATES } from '@/lib/saga/templates';
 import { Locale, UI_COPY } from '@/lib/saga/i18n';
@@ -40,6 +41,8 @@ interface WorkspaceToolbarProps {
   onToggleLocale: () => void;
   darkMode: boolean;
   onToggleDarkMode: () => void;
+  embeddedFileName?: string | null;
+  onOpenVsCodeModal?: () => void;
 }
 
 export default function WorkspaceToolbar({
@@ -65,6 +68,8 @@ export default function WorkspaceToolbar({
   onToggleLocale,
   darkMode,
   onToggleDarkMode,
+  embeddedFileName = null,
+  onOpenVsCodeModal,
 }: WorkspaceToolbarProps) {
   const t = UI_COPY[locale];
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -84,35 +89,48 @@ export default function WorkspaceToolbar({
   };
 
   return (
-    <div className="min-h-11 px-4 py-1.5 flex flex-wrap items-center justify-between gap-3 bg-slate-50 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800 shrink-0">
-      {/* Left: Template switcher & quiet unboxed metadata */}
-      <div className="flex items-center gap-4 min-w-0">
-        <div className="flex items-center gap-2">
-          <label
-            htmlFor="template-selector"
-            className="text-xs font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap"
+    <div className="min-h-11 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 bg-slate-50 dark:bg-slate-900/80 border-b border-slate-200 dark:border-slate-800 shrink-0">
+      {/* Left: Template switcher (standalone) or VS Code file badge (embedded) */}
+      <div className="flex items-center gap-2.5 min-w-0">
+        {embeddedFileName ? (
+          <div
+            data-testid="vscode-embedded-file-badge"
+            className="inline-flex items-center gap-1.5 text-xs font-mono font-semibold text-blue-700 dark:text-blue-300"
           >
-            {t.templateLabel}
-          </label>
-          <select
-            id="template-selector"
-            value={selectedTemplateId}
-            onChange={(e) => onSelectTemplate(e.target.value)}
-            className="h-8 max-w-[215px] px-2.5 text-xs font-medium bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-600 truncate"
-          >
-            {SAGA_TEMPLATES.map((tpl) => (
-              <option key={tpl.id} value={tpl.id}>
-                {locale === 'zh-TW' ? tpl.labelZh : tpl.labelEn}
+            <Blocks className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate max-w-[200px]">{embeddedFileName}</span>
+            <span className="font-sans font-normal text-[11px] text-slate-500 dark:text-slate-400">
+              VS Code
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5">
+            <label
+              htmlFor="template-selector"
+              className="text-xs font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap"
+            >
+              {t.templateLabel}
+            </label>
+            <select
+              id="template-selector"
+              value={selectedTemplateId}
+              onChange={(e) => onSelectTemplate(e.target.value)}
+              className="h-8 max-w-[172px] px-2 text-xs font-medium bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-600 truncate"
+            >
+              {SAGA_TEMPLATES.map((tpl) => (
+                <option key={tpl.id} value={tpl.id}>
+                  {locale === 'zh-TW' ? tpl.labelZh : tpl.labelEn}
+                </option>
+              ))}
+              <option value="custom">
+                {locale === 'zh-TW' ? '自訂狀態機' : 'Custom State Machine'}
               </option>
-            ))}
-            <option value="custom">
-              {locale === 'zh-TW' ? '自訂狀態機' : 'Custom State Machine'}
-            </option>
-          </select>
-        </div>
+            </select>
+          </div>
+        )}
 
-        <div className="hidden xl:flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums truncate">
-          <span className="font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[180px]">
+        <div className="hidden xl:flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums truncate">
+          <span className="font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[148px]">
             {machineName}
           </span>
           <span aria-hidden="true">·</span>
@@ -129,15 +147,15 @@ export default function WorkspaceToolbar({
       </div>
 
       {/* Right: Designer utility actions */}
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <div className="flex items-center border-r border-slate-200 dark:border-slate-700 pr-2 mr-0.5 gap-1">
+      <div className="flex items-center gap-1 flex-wrap">
+        <div className="flex items-center border-r border-slate-200 dark:border-slate-700 pr-1.5 mr-0.5 gap-0.5">
           <button
             type="button"
             onClick={onUndo}
             disabled={!canUndo}
             aria-label={t.undo}
             title={`${t.undo} (Ctrl+Z)`}
-            className="inline-flex items-center justify-center w-8 h-8 rounded-md text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            className="inline-flex items-center justify-center w-7 h-8 rounded-md text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
           >
             <Undo2 className="w-4 h-4" />
           </button>
@@ -147,7 +165,7 @@ export default function WorkspaceToolbar({
             disabled={!canRedo}
             aria-label={t.redo}
             title={`${t.redo} (Ctrl+Y)`}
-            className="inline-flex items-center justify-center w-8 h-8 rounded-md text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            className="inline-flex items-center justify-center w-7 h-8 rounded-md text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
           >
             <Redo2 className="w-4 h-4" />
           </button>
@@ -156,7 +174,7 @@ export default function WorkspaceToolbar({
         <button
           type="button"
           onClick={onAutoLayout}
-          className="inline-flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          className="inline-flex items-center gap-1 h-8 px-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
           <LayoutGrid className="w-3.5 h-3.5" />
           <span>{t.autoLayout}</span>
@@ -173,7 +191,7 @@ export default function WorkspaceToolbar({
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="inline-flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          className="inline-flex items-center gap-1 h-8 px-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
           <Upload className="w-3.5 h-3.5" />
           <span>{t.importFile}</span>
@@ -182,7 +200,7 @@ export default function WorkspaceToolbar({
         <button
           type="button"
           onClick={onExportYaml}
-          className="inline-flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          className="inline-flex items-center gap-1 h-8 px-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
           <FileCode2 className="w-3.5 h-3.5" />
           <span>{t.exportYaml}</span>
@@ -191,7 +209,7 @@ export default function WorkspaceToolbar({
         <button
           type="button"
           onClick={onExportSvg}
-          className="inline-flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          className="inline-flex items-center gap-1 h-8 px-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
           <ImageDown className="w-3.5 h-3.5" />
           <span>{t.exportSvg}</span>
@@ -201,7 +219,7 @@ export default function WorkspaceToolbar({
           type="button"
           onClick={onToggleValidation}
           aria-expanded={validationOpen}
-          className={`inline-flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer border ${
+          className={`inline-flex items-center gap-1 h-8 px-2 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer border ${
             validationOpen
               ? 'bg-slate-200/80 dark:bg-slate-800 border-slate-300 dark:border-slate-600 text-slate-900 dark:text-slate-100'
               : 'border-transparent hover:bg-slate-200/70 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200'
@@ -220,13 +238,26 @@ export default function WorkspaceToolbar({
           </span>
         </button>
 
-        <div className="flex items-center border-l border-slate-200 dark:border-slate-700 pl-2 ml-0.5 gap-1">
+        {!embeddedFileName && onOpenVsCodeModal && (
+          <button
+            type="button"
+            data-testid="btn-open-vscode-modal"
+            onClick={onOpenVsCodeModal}
+            title={t.vscodeModalTitle}
+            className="inline-flex items-center gap-1 h-8 px-2 text-xs font-medium text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/50 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Blocks className="w-3.5 h-3.5" />
+            <span>{t.vscodeExtension}</span>
+          </button>
+        )}
+
+        <div className="flex items-center border-l border-slate-200 dark:border-slate-700 pl-1.5 ml-0.5 gap-0.5">
           <button
             type="button"
             onClick={onToggleLocale}
             aria-label={locale === 'zh-TW' ? 'Switch to English' : '切換至繁體中文'}
             title={locale === 'zh-TW' ? 'Switch to English' : '切換至繁體中文'}
-            className="inline-flex items-center gap-1 h-8 px-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1 h-8 px-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Languages className="w-3.5 h-3.5" />
             <span>{locale === 'zh-TW' ? 'EN' : '繁中'}</span>
@@ -237,7 +268,7 @@ export default function WorkspaceToolbar({
             onClick={onToggleDarkMode}
             aria-label={darkMode ? 'Light mode' : 'Dark mode'}
             title={darkMode ? 'Light mode' : 'Dark mode'}
-            className="inline-flex items-center justify-center w-8 h-8 rounded-md text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            className="inline-flex items-center justify-center w-7 h-8 rounded-md text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 transition-colors cursor-pointer"
           >
             {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </button>

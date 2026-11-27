@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { Download } from 'lucide-react';
 import { Locale, UI_COPY } from '@/lib/saga/i18n';
 
@@ -39,7 +40,7 @@ export default function TopHeader({
         {t.brand}
       </button>
 
-      {/* Zone 2: 4 clean single-line navigation tabs */}
+      {/* Zone 2: 5 clean single-line navigation links */}
       <nav
         aria-label="Workspace views"
         className="flex items-center gap-6 overflow-x-auto"
@@ -65,6 +66,13 @@ export default function TopHeader({
             </button>
           );
         })}
+        <Link
+          href="/docs"
+          data-testid="nav-docs-link"
+          className="relative py-4 text-sm font-medium whitespace-nowrap shrink-0 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+        >
+          {t.navDocs}
+        </Link>
       </nav>
 
       {/* Zone 3: Single Primary Action */}
