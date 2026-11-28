@@ -1,10 +1,17 @@
-import { Point, SagaEdge, SagaNode } from './types';
+import { EdgeAnchorOverride, NodeAnchorSide, Point, SagaEdge, SagaNode } from './types';
 
 export interface RectBox {
   x: number;
   y: number;
   width: number;
   height: number;
+}
+
+export interface RoutedCatchAnchor {
+  side: NodeAnchorSide;
+  ratio: number;
+  borderPoint: Point;
+  isCustom: boolean;
 }
 
 export interface RoutedEdge {
@@ -16,7 +23,7 @@ export interface RoutedEdge {
   labelText: string;
   labelPos: Point;
   labelBox: RectBox | null;
-  catchAnchorSide?: 'left' | 'right' | 'center';
+  catchAnchor?: RoutedCatchAnchor;
 }
 
 export function getNodeCenter(node: SagaNode): Point {
@@ -47,6 +54,15 @@ export function estimateEdgeLabelSize(labelText: string): { width: number; heigh
   return { width, height };
 }
 
+function isCircularNode(node: SagaNode): boolean {
+  return (
+    node.type === 'StartState' ||
+    node.type === 'Succeed' ||
+    node.type === 'Fail' ||
+    node.type === 'CompensationTrigger'
+  );
+}
+
 export function getNodeBoundaryPoint(node: SagaNode, toward: Point): Point {
   const cx = node.x + node.width / 2;
   const cy = node.y + node.height / 2;
@@ -55,12 +71,7 @@ export function getNodeBoundaryPoint(node: SagaNode, toward: Point): Point {
 
   if (dx === 0 && dy === 0) return { x: cx, y: cy };
 
-  if (
-    node.type === 'StartState' ||
-    node.type === 'Succeed' ||
-    node.type === 'Fail' ||
-    node.type === 'CompensationTrigger'
-  ) {
+  if (isCircularNode(node)) {
     const r = Math.min(node.width, node.height) / 2 + 2;
     const len = Math.hypot(dx, dy);
     return { x: cx + (dx / len) * r, y: cy + (dy / len) * r };
@@ -79,6 +90,224 @@ export function getNodeBoundaryPoint(node: SagaNode, toward: Point): Point {
   const sy = dy !== 0 ? hh / Math.abs(dy) : Infinity;
   const scale = Math.min(sx, sy);
   return { x: cx + dx * scale, y: cy + dy * scale };
+}
+
+function clampAnchorRatio(side: NodeAnchorSide, ratio: number): number {
+  const safe = Number.isFinite(ratio) ? ratio : 0.5;
+  if (side === 'top' || side === 'bottom') {
+    return Math.min(0.86, Math.max(0.14, safe));
+  }
+  return Math.min(0.8, Math.max(0.2, safe));
+}
+
+export function getSideOutwardNormal(side: NodeAnchorSide): Point {
+  switch (side) {
+    case 'top':
+      return { x: 0, y: -1 };
+    case 'right':
+      return { x: 1, y: 0 };
+    case 'bottom':
+      return { x: 0, y: 1 };
+    case 'left':
+      return { x: -1, y: 0 };
+  }
+}
+
+/**
+ * Projects an arbitrary canvas point onto the nearest point on a node's
+ * perimeter, returning a normalized side + ratio suitable for BPMN boundary
+ * event dragging.
+ */
+export function projectPointToNodePerimeter(
+  node: SagaNode,
+  pt: Point
+): EdgeAnchorOverride {
+  const cx = node.x + node.width / 2;
+  const cy = node.y + node.height / 2;
+  const dx = pt.x - cx;
+  const dy = pt.y - cy;
+
+  const hw = Math.max(1, node.width / 2);
+  const hh = Math.max(1, node.height / 2);
+  const normX = Math.abs(dx) / hw;
+  const normY = Math.abs(dy) / hh;
+
+  let side: NodeAnchorSide;
+  if (normX > normY) {
+    side = dx >= 0 ? 'right' : 'left';
+  } else {
+    side = dy >= 0 ? 'bottom' : 'top';
+  }
+
+  let rawRatio: number;
+  if (side === 'top' || side === 'bottom') {
+    rawRatio = (pt.x - node.x) / Math.max(1, node.width);
+  } else {
+    rawRatio = (pt.y - node.y) / Math.max(1, node.height);
+  }
+
+  return {
+    side,
+    ratio: Number(clampAnchorRatio(side, rawRatio).toFixed(3)),
+  };
+}
+
+/**
+ * Resolves a side + normalized ratio into exact border coordinates (for the
+ * BPMN boundary marker) and slightly outward wire start coordinates.
+ */
+export function resolveAnchorPointOnNode(
+  node: SagaNode,
+  anchor: EdgeAnchorOverride,
+  outwardOffset = 2
+): { borderPoint: Point; wireStart: Point; ratio: number } {
+  const ratio = clampAnchorRatio(anchor.side, anchor.ratio);
+  const normal = getSideOutwardNormal(anchor.side);
+
+  let borderPoint: Point;
+  if (isCircularNode(node)) {
+    const cx = node.x + node.width / 2;
+    const cy = node.y + node.height / 2;
+    const r = Math.min(node.width, node.height) / 2;
+    // Map side + ratio onto an arc along the circle perimeter
+    const spread = (ratio - 0.5) * (Math.PI * 0.45);
+    const baseAngle =
+      anchor.side === 'right'
+        ? 0
+        : anchor.side === 'bottom'
+          ? Math.PI / 2
+          : anchor.side === 'left'
+            ? Math.PI
+            : -Math.PI / 2;
+    const angle =
+      anchor.side === 'top' || anchor.side === 'right'
+        ? baseAngle + spread
+        : baseAngle - spread;
+    borderPoint = {
+      x: cx + Math.cos(angle) * r,
+      y: cy + Math.sin(angle) * r,
+    };
+    const wireStart = {
+      x: cx + Math.cos(angle) * (r + outwardOffset),
+      y: cy + Math.sin(angle) * (r + outwardOffset),
+    };
+    return { borderPoint, wireStart, ratio };
+  }
+
+  if (anchor.side === 'top') {
+    borderPoint = { x: node.x + node.width * ratio, y: node.y };
+  } else if (anchor.side === 'bottom') {
+    borderPoint = { x: node.x + node.width * ratio, y: node.y + node.height };
+  } else if (anchor.side === 'left') {
+    borderPoint = { x: node.x, y: node.y + node.height * ratio };
+  } else {
+    borderPoint = { x: node.x + node.width, y: node.y + node.height * ratio };
+  }
+
+  const wireStart = {
+    x: borderPoint.x + normal.x * outwardOffset,
+    y: borderPoint.y + normal.y * outwardOffset,
+  };
+
+  return { borderPoint, wireStart, ratio };
+}
+
+function getEdgeExitSideAndRatio(
+  source: SagaNode,
+  target: SagaNode,
+  edge: SagaEdge
+): { side: NodeAnchorSide; ratio: number } {
+  const srcCenter = getNodeCenter(source);
+  const tgtCenter = getNodeCenter(target);
+  const dx = tgtCenter.x - srcCenter.x;
+  const dy = tgtCenter.y - srcCenter.y;
+
+  if (edge.type === 'Compensation' && Math.abs(dy) >= Math.abs(dx) * 0.7) {
+    return { side: dy >= 0 ? 'bottom' : 'top', ratio: 0.5 };
+  }
+
+  const hw = Math.max(1, source.width / 2);
+  const hh = Math.max(1, source.height / 2);
+  const normX = Math.abs(dx) / hw;
+  const normY = Math.abs(dy) / hh;
+
+  if (normX > normY) {
+    const side: NodeAnchorSide = dx >= 0 ? 'right' : 'left';
+    const intersectY = srcCenter.y + dy * (hw / Math.max(1, Math.abs(dx)));
+    const ratio = clampAnchorRatio(side, (intersectY - source.y) / Math.max(1, source.height));
+    return { side, ratio };
+  }
+
+  const side: NodeAnchorSide = dy >= 0 ? 'bottom' : 'top';
+  const intersectX = srcCenter.x + dx * (hh / Math.max(1, Math.abs(dy)));
+  const ratio = clampAnchorRatio(side, (intersectX - source.x) / Math.max(1, source.width));
+  return { side, ratio };
+}
+
+/**
+ * Dynamically selects the optimal 360° perimeter side and offset for a Catch
+ * edge facing its target node while avoiding collisions with sibling outgoing
+ * Compensation or Transition wires on the same border.
+ */
+export function computeAutoCatchAnchor(
+  source: SagaNode,
+  target: SagaNode,
+  siblingOutgoing: Array<{ edge: SagaEdge; target: SagaNode }>
+): EdgeAnchorOverride {
+  const srcCenter = getNodeCenter(source);
+  const tgtCenter = getNodeCenter(target);
+  const dx = tgtCenter.x - srcCenter.x;
+  const dy = tgtCenter.y - srcCenter.y;
+
+  const hw = Math.max(1, source.width / 2);
+  const hh = Math.max(1, source.height / 2);
+  const normX = Math.abs(dx) / hw;
+  const normY = Math.abs(dy) / hh;
+
+  let side: NodeAnchorSide;
+  let ratio: number;
+
+  if (normX > normY) {
+    side = dx >= 0 ? 'right' : 'left';
+    const intersectY = srcCenter.y + dy * (hw / Math.max(1, Math.abs(dx)));
+    ratio = clampAnchorRatio(side, (intersectY - source.y) / Math.max(1, source.height));
+  } else {
+    side = dy >= 0 ? 'bottom' : 'top';
+    const intersectX = srcCenter.x + dx * (hh / Math.max(1, Math.abs(dy)));
+    ratio = clampAnchorRatio(side, (intersectX - source.x) / Math.max(1, source.width));
+  }
+
+  // Avoid colliding with non-Catch outgoing wires (e.g. Compensation on bottom-center
+  // or primary Transition on right-center)
+  const occupiedOnSameSide = siblingOutgoing
+    .filter((s) => s.edge.type !== 'Catch')
+    .map((s) => getEdgeExitSideAndRatio(source, s.target, s.edge))
+    .filter((exit) => exit.side === side);
+
+  if (occupiedOnSameSide.length > 0) {
+    const conflicts = occupiedOnSameSide.some(
+      (exit) => Math.abs(exit.ratio - ratio) < 0.24
+    );
+    if (conflicts) {
+      if (side === 'top' || side === 'bottom') {
+        const preferred = dx < -12 ? 0.16 : dx > 12 ? 0.84 : 0.84;
+        const alt = preferred < 0.5 ? 0.84 : 0.16;
+        const preferredClear = occupiedOnSameSide.every(
+          (exit) => Math.abs(exit.ratio - preferred) >= 0.2
+        );
+        ratio = preferredClear ? preferred : alt;
+      } else {
+        const preferred = dy < -12 ? 0.22 : dy > 12 ? 0.78 : 0.78;
+        const alt = preferred < 0.5 ? 0.78 : 0.22;
+        const preferredClear = occupiedOnSameSide.every(
+          (exit) => Math.abs(exit.ratio - preferred) >= 0.2
+        );
+        ratio = preferredClear ? preferred : alt;
+      }
+    }
+  }
+
+  return { side, ratio: Number(clampAnchorRatio(side, ratio).toFixed(3)) };
 }
 
 export function rectsOverlapArea(a: RectBox, b: RectBox, pad = 0): number {
@@ -205,10 +434,11 @@ function countCurveNodeHits(
   start: Point,
   control: Point | null,
   end: Point,
-  obstacles: RectBox[]
+  obstacles: RectBox[],
+  selfInteriorObstacle?: RectBox
 ): number {
-  if (obstacles.length === 0) return 0;
-  const samples = 14;
+  if (obstacles.length === 0 && !selfInteriorObstacle) return 0;
+  const samples = 16;
   let hits = 0;
   let prev = start;
   for (let i = 1; i <= samples; i += 1) {
@@ -218,31 +448,152 @@ function countCurveNodeHits(
         hits += 1;
       }
     }
+    if (selfInteriorObstacle && i >= 2 && segmentIntersectsRect(prev, curr, selfInteriorObstacle, 0)) {
+      hits += 2;
+    }
     prev = curr;
   }
   return hits;
 }
 
+function resolveAllCatchAnchors(
+  nodes: SagaNode[],
+  edges: SagaEdge[]
+): Map<string, RoutedCatchAnchor> {
+  const nodeMap = new Map<string, SagaNode>(nodes.map((n) => [n.id, n]));
+  const outgoingBySource = new Map<string, Array<{ edge: SagaEdge; target: SagaNode }>>();
+  for (const edge of edges) {
+    const target = nodeMap.get(edge.target);
+    if (!target) continue;
+    const list = outgoingBySource.get(edge.source) ?? [];
+    list.push({ edge, target });
+    outgoingBySource.set(edge.source, list);
+  }
+
+  // Initial anchor assignment per Catch edge
+  const draft = new Map<
+    string,
+    {
+      edge: SagaEdge;
+      source: SagaNode;
+      target: SagaNode;
+      side: NodeAnchorSide;
+      ratio: number;
+      isCustom: boolean;
+    }
+  >();
+
+  for (const edge of edges) {
+    if (edge.type !== 'Catch') continue;
+    const source = nodeMap.get(edge.source);
+    const target = nodeMap.get(edge.target);
+    if (!source || !target) continue;
+
+    if (edge.sourceAnchor) {
+      draft.set(edge.id, {
+        edge,
+        source,
+        target,
+        side: edge.sourceAnchor.side,
+        ratio: clampAnchorRatio(edge.sourceAnchor.side, edge.sourceAnchor.ratio),
+        isCustom: true,
+      });
+    } else {
+      const siblings = outgoingBySource.get(edge.source) ?? [];
+      const auto = computeAutoCatchAnchor(source, target, siblings);
+      draft.set(edge.id, {
+        edge,
+        source,
+        target,
+        side: auto.side,
+        ratio: auto.ratio,
+        isCustom: false,
+      });
+    }
+  }
+
+  // Spread multiple auto-anchored Catch edges that crowd the same border side
+  const groups = new Map<string, Array<{ edgeId: string; side: NodeAnchorSide }>>();
+  draft.forEach((item, edgeId) => {
+    if (item.isCustom) return;
+    const key = `${item.source.id}::${item.side}`;
+    const list = groups.get(key) ?? [];
+    list.push({ edgeId, side: item.side });
+    groups.set(key, list);
+  });
+
+  groups.forEach((entries) => {
+    if (entries.length < 2) return;
+    const items = entries.map((e) => ({ edgeId: e.edgeId, data: draft.get(e.edgeId)! }));
+    const isHorizontal = items[0].data.side === 'top' || items[0].data.side === 'bottom';
+
+    // Order left-to-right (or top-to-bottom) by target center so wires don't cross
+    items.sort((a, b) => {
+      const ca = getNodeCenter(a.data.target);
+      const cb = getNodeCenter(b.data.target);
+      return isHorizontal ? ca.x - cb.x : ca.y - cb.y;
+    });
+
+    const tooClose = items.some(
+      (it, idx) =>
+        idx > 0 && Math.abs(it.data.ratio - items[idx - 1].data.ratio) < 0.24
+    );
+    if (tooClose) {
+      const minR = isHorizontal ? 0.18 : 0.22;
+      const maxR = isHorizontal ? 0.82 : 0.78;
+      const step = (maxR - minR) / Math.max(1, items.length - 1);
+      items.forEach((it, idx) => {
+        it.data.ratio = Number((minR + idx * step).toFixed(3));
+      });
+    }
+  });
+
+  const resolved = new Map<string, RoutedCatchAnchor>();
+  draft.forEach((item, edgeId) => {
+    const { borderPoint, ratio } = resolveAnchorPointOnNode(item.source, {
+      side: item.side,
+      ratio: item.ratio,
+    });
+    resolved.set(edgeId, {
+      side: item.side,
+      ratio,
+      borderPoint,
+      isCustom: item.isCustom,
+    });
+  });
+
+  return resolved;
+}
+
 function buildSmartEndpoints(
   source: SagaNode,
   target: SagaNode,
-  edge: SagaEdge
-): { start: Point; end: Point; catchAnchorSide?: 'left' | 'right' | 'center' } {
+  edge: SagaEdge,
+  catchAnchor?: RoutedCatchAnchor
+): { start: Point; end: Point; catchAnchor?: RoutedCatchAnchor } {
   const srcCenter = getNodeCenter(source);
   const tgtCenter = getNodeCenter(target);
 
   let start: Point;
-  let catchAnchorSide: 'left' | 'right' | 'center' | undefined;
+  let resolvedCatchAnchor = catchAnchor;
   if (edge.type === 'Catch') {
-    // Dynamically pick the bottom Catch anchor facing the target so the wire
-    // never crosses back across its own task's Compensation wire!
-    const dx = tgtCenter.x - srcCenter.x;
-    const anchorRatio = dx < -30 ? 0.16 : dx > 30 ? 0.84 : 0.5;
-    catchAnchorSide = dx < -30 ? 'left' : dx > 30 ? 'right' : 'center';
-    start = {
-      x: source.x + source.width * anchorRatio,
-      y: source.y + source.height + 2,
-    };
+    if (!resolvedCatchAnchor) {
+      const fallback = edge.sourceAnchor ?? computeAutoCatchAnchor(source, target, []);
+      const pts = resolveAnchorPointOnNode(source, fallback);
+      resolvedCatchAnchor = {
+        side: fallback.side,
+        ratio: pts.ratio,
+        borderPoint: pts.borderPoint,
+        isCustom: Boolean(edge.sourceAnchor),
+      };
+      start = pts.wireStart;
+    } else {
+      const pts = resolveAnchorPointOnNode(source, {
+        side: resolvedCatchAnchor.side,
+        ratio: resolvedCatchAnchor.ratio,
+      });
+      start = pts.wireStart;
+    }
   } else if (edge.type === 'Compensation') {
     const dx = tgtCenter.x - srcCenter.x;
     const dy = tgtCenter.y - srcCenter.y;
@@ -259,13 +610,14 @@ function buildSmartEndpoints(
   }
 
   const end = getNodeBoundaryPoint(target, start);
-  return { start, end, catchAnchorSide };
+  return { start, end, catchAnchor: resolvedCatchAnchor };
 }
 
 /**
  * Computes obstacle-aware SVG paths and collision-free label placements for all
- * edges in a Seata Saga graph. Guarantees edge labels avoid covering nodes and
- * avoid overlapping other edge labels.
+ * edges in a Seata Saga graph. Guarantees Catch edges dynamically anchor around
+ * all 4 sides of the source node (or honor user-dragged perimeter pins) and
+ * edge labels avoid covering nodes and other edge labels.
  */
 export function computeGraphEdgeRoutes(
   nodes: SagaNode[],
@@ -273,6 +625,7 @@ export function computeGraphEdgeRoutes(
 ): Map<string, RoutedEdge> {
   const nodeMap = new Map<string, SagaNode>(nodes.map((n) => [n.id, n]));
   const result = new Map<string, RoutedEdge>();
+  const catchAnchors = resolveAllCatchAnchors(nodes, edges);
 
   // Sibling edge grouping for parallel pairs
   const pairCounts = new Map<string, number>();
@@ -292,6 +645,7 @@ export function computeGraphEdgeRoutes(
     }));
 
   // Phase 1: Route every edge smoothly, bending around any intermediate node box
+  // (and wrapping around source itself when a Catch anchor is pinned on the opposite side)
   const prelim: Array<{
     edge: SagaEdge;
     source: SagaNode;
@@ -301,7 +655,7 @@ export function computeGraphEdgeRoutes(
     end: Point;
     control: Point | null;
     labelText: string;
-    catchAnchorSide?: 'left' | 'right' | 'center';
+    catchAnchor?: RoutedCatchAnchor;
   }> = [];
 
   for (const edge of edges) {
@@ -309,7 +663,13 @@ export function computeGraphEdgeRoutes(
     const target = nodeMap.get(edge.target);
     if (!source || !target) continue;
 
-    const { start, end, catchAnchorSide } = buildSmartEndpoints(source, target, edge);
+    const { start, end: initialEnd, catchAnchor } = buildSmartEndpoints(
+      source,
+      target,
+      edge,
+      catchAnchors.get(edge.id)
+    );
+    let end = initialEnd;
     const dx = end.x - start.x;
     const dy = end.y - start.y;
     const dist = Math.hypot(dx, dy) || 1;
@@ -329,32 +689,85 @@ export function computeGraphEdgeRoutes(
         ? (siblingIndex - (siblingTotal - 1) / 2) * 38
         : 0;
 
+    // Detect if a pinned Catch anchor points away from its target
+    let selfInteriorObstacle: RectBox | undefined;
+    const candidateControls: Array<{ control: Point | null; penalty: number }> = [];
+
+    if (catchAnchor) {
+      const out = getSideOutwardNormal(catchAnchor.side);
+      const outwardDot = dx * out.x + dy * out.y;
+      if (outwardDot < 12) {
+        selfInteriorObstacle = {
+          x: source.x + 6,
+          y: source.y + 6,
+          width: Math.max(4, source.width - 12),
+          height: Math.max(4, source.height - 12),
+        };
+        const isHorizAnchor = catchAnchor.side === 'top' || catchAnchor.side === 'bottom';
+        const wrapSpan = (isHorizAnchor ? source.width : source.height) * 0.72 + 54;
+        const outReach = Math.max(64, Math.min(130, dist * 0.35 + 48));
+        // Try wrapping around both sides of the source node in the anchor's outward half-plane
+        for (const sign of [1, -1]) {
+          for (const mult of [1, 1.45]) {
+            const ctrl: Point = isHorizAnchor
+              ? {
+                  x: start.x + sign * wrapSpan * mult,
+                  y: start.y + out.y * outReach * mult,
+                }
+              : {
+                  x: start.x + out.x * outReach * mult,
+                  y: start.y + sign * wrapSpan * mult,
+                };
+            candidateControls.push({
+              control: ctrl,
+              penalty: 40 + (mult - 1) * 80,
+            });
+          }
+        }
+      }
+    }
+
     const candidateOffsets: number[] =
       Math.abs(baseOffset) >= 1
         ? [baseOffset, baseOffset * 1.6, -baseOffset * 1.6]
         : [0, 34, -34, 68, -68, 108, -108, 152, -152];
 
+    for (const offset of candidateOffsets) {
+      candidateControls.push({
+        control:
+          Math.abs(offset) < 1
+            ? null
+            : {
+                x: (start.x + end.x) / 2 + nx * offset,
+                y: (start.y + end.y) / 2 + ny * offset,
+              },
+        penalty: Math.abs(offset) * 1.2,
+      });
+    }
+
     let bestControl: Point | null = null;
     let bestScore = Infinity;
 
-    for (const offset of candidateOffsets) {
-      const control: Point | null =
-        Math.abs(offset) < 1
-          ? null
-          : {
-              x: (start.x + end.x) / 2 + nx * offset,
-              y: (start.y + end.y) / 2 + ny * offset,
-            };
-      const hits = countCurveNodeHits(start, control, end, intermediateObstacles);
-      // Strongly prefer zero obstacle hits, then minimal curvature
-      const score = hits * 10000 + Math.abs(offset) * 1.2;
+    for (const cand of candidateControls) {
+      const hits = countCurveNodeHits(
+        start,
+        cand.control,
+        end,
+        intermediateObstacles,
+        selfInteriorObstacle
+      );
+      const score = hits * 10000 + cand.penalty;
       if (score < bestScore) {
         bestScore = score;
-        bestControl = control;
-        if (hits === 0 && Math.abs(offset) <= Math.abs(baseOffset) + 1) {
+        bestControl = cand.control;
+        if (hits === 0 && !selfInteriorObstacle && cand.penalty <= Math.abs(baseOffset) * 1.2 + 1.5) {
           break;
         }
       }
+    }
+
+    if (bestControl && selfInteriorObstacle) {
+      end = getNodeBoundaryPoint(target, bestControl);
     }
 
     const path = bestControl
@@ -370,7 +783,7 @@ export function computeGraphEdgeRoutes(
       end,
       control: bestControl,
       labelText: getEdgeLabelText(edge),
-      catchAnchorSide,
+      catchAnchor,
     });
   }
 
@@ -401,7 +814,7 @@ export function computeGraphEdgeRoutes(
 
     // Prefer crisp placement directly above horizontal Choice edges; otherwise
     // test centered on line and perpendicular offsets on both sides, extending
-    // out to ±84px if adjacent tall nodes crowd a narrow horizontal gap.
+    // out to ±88px if adjacent tall nodes crowd a narrow horizontal gap.
     const normalOffsets =
       item.edge.type === 'Choice' && isHorizontal
         ? [-20, -34, -48, -64, -78, 20, 34, 48, 64, 78, 0]
@@ -487,7 +900,7 @@ export function computeGraphEdgeRoutes(
       labelText: item.labelText,
       labelPos: placed?.pos ?? evalQuadratic(item.start, item.control, item.end, 0.5),
       labelBox: placed?.box ?? null,
-      catchAnchorSide: item.catchAnchorSide,
+      catchAnchor: item.catchAnchor,
     });
   }
 
@@ -502,12 +915,13 @@ export function countEdgesPassingThroughNodes(
   edges: SagaEdge[]
 ): number {
   const nodeMap = new Map<string, SagaNode>(nodes.map((n) => [n.id, n]));
+  const catchAnchors = resolveAllCatchAnchors(nodes, edges);
   let count = 0;
   for (const edge of edges) {
     const src = nodeMap.get(edge.source);
     const tgt = nodeMap.get(edge.target);
     if (!src || !tgt) continue;
-    const { start, end } = buildSmartEndpoints(src, tgt, edge);
+    const { start, end } = buildSmartEndpoints(src, tgt, edge, catchAnchors.get(edge.id));
     for (const node of nodes) {
       if (node.id === edge.source || node.id === edge.target) continue;
       const box = { x: node.x, y: node.y, width: node.width, height: node.height };

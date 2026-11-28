@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { ArrowLeft, FolderOpen, Layers, Plus, Trash2 } from 'lucide-react';
 import {
+  NodeAnchorSide,
   RetryConfig,
   SagaEdge,
   SagaGraph,
@@ -142,25 +143,93 @@ export default function PropertiesPanel({
           )}
 
           {selectedEdge.type === 'Catch' && (
-            <div>
-              <label htmlFor="edge-exceptions" className={labelCls}>
-                Exceptions (one per line)
-              </label>
-              <textarea
-                id="edge-exceptions"
-                rows={4}
-                value={(selectedEdge.exceptions ?? ['java.lang.Throwable']).join('\n')}
-                onChange={(e) =>
-                  onUpdateEdge(selectedEdge.id, {
-                    exceptions: e.target.value
-                      .split('\n')
-                      .map((s) => s.trim())
-                      .filter(Boolean),
-                  })
-                }
-                className={inputCls}
-              />
-            </div>
+            <>
+              <div>
+                <label htmlFor="edge-exceptions" className={labelCls}>
+                  Exceptions (one per line)
+                </label>
+                <textarea
+                  id="edge-exceptions"
+                  rows={4}
+                  value={(selectedEdge.exceptions ?? ['java.lang.Throwable']).join('\n')}
+                  onChange={(e) =>
+                    onUpdateEdge(selectedEdge.id, {
+                      exceptions: e.target.value
+                        .split('\n')
+                        .map((s) => s.trim())
+                        .filter(Boolean),
+                    })
+                  }
+                  className={inputCls}
+                />
+              </div>
+
+              <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                    {locale === 'zh-TW' ? '連線起點位置' : 'Catch Anchor Position'}
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                    {selectedEdge.sourceAnchor
+                      ? `${selectedEdge.sourceAnchor.side} · ${Math.round(selectedEdge.sourceAnchor.ratio * 100)}%`
+                      : locale === 'zh-TW'
+                        ? '自動 360°'
+                        : 'Auto 360°'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-5 gap-1">
+                  {(
+                    [
+                      { key: 'auto', zh: '自動', en: 'Auto' },
+                      { key: 'top', zh: '上', en: 'Top' },
+                      { key: 'right', zh: '右', en: 'Right' },
+                      { key: 'bottom', zh: '下', en: 'Bottom' },
+                      { key: 'left', zh: '左', en: 'Left' },
+                    ] as const
+                  ).map((opt) => {
+                    const isActive =
+                      opt.key === 'auto'
+                        ? !selectedEdge.sourceAnchor
+                        : selectedEdge.sourceAnchor?.side === opt.key;
+                    return (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        data-testid={`catch-anchor-side-${opt.key}`}
+                        onClick={() => {
+                          if (opt.key === 'auto') {
+                            onUpdateEdge(selectedEdge.id, {
+                              sourceAnchor: undefined,
+                            });
+                          } else {
+                            const side: NodeAnchorSide = opt.key;
+                            const ratio =
+                              selectedEdge.sourceAnchor?.side === side
+                                ? selectedEdge.sourceAnchor.ratio
+                                : 0.5;
+                            onUpdateEdge(selectedEdge.id, {
+                              sourceAnchor: { side, ratio },
+                            });
+                          }
+                        }}
+                        className={`px-1.5 py-1 text-[11px] font-medium rounded-md border transition-colors cursor-pointer ${
+                          isActive
+                            ? 'bg-amber-600 text-white border-amber-600'
+                            : 'bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-amber-500'
+                        }`}
+                      >
+                        {locale === 'zh-TW' ? opt.zh : opt.en}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  {locale === 'zh-TW'
+                    ? '預設隨目標節點拖曳自動切換四邊起點；也可直接在畫布上沿來源節點邊框拖曳橘色 Catch 圖示固定位置，雙擊即恢復自動。'
+                    : 'Auto-tracks the target across all 4 borders as you drag. You can also drag the amber Catch icon along the source border to pin it, or double-click to reset.'}
+                </p>
+              </div>
+            </>
           )}
         </div>
       </aside>

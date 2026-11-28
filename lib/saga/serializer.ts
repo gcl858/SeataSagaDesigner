@@ -1,5 +1,7 @@
 import {
+  EdgeAnchorOverride,
   NODE_DIMENSIONS,
+  NodeAnchorSide,
   SagaEdge,
   SagaGraph,
   SagaNode,
@@ -28,6 +30,32 @@ function safeParseJson<T>(raw: string | undefined): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+const VALID_ANCHOR_SIDES = new Set<NodeAnchorSide>([
+  'top',
+  'right',
+  'bottom',
+  'left',
+]);
+
+function parseEdgeAnchorOverride(raw: unknown): EdgeAnchorOverride | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const candidate = raw as { side?: unknown; ratio?: unknown };
+  if (
+    typeof candidate.side !== 'string' ||
+    !VALID_ANCHOR_SIDES.has(candidate.side as NodeAnchorSide)
+  ) {
+    return undefined;
+  }
+  const ratio =
+    typeof candidate.ratio === 'number' && Number.isFinite(candidate.ratio)
+      ? Math.min(0.95, Math.max(0.05, candidate.ratio))
+      : 0.5;
+  return {
+    side: candidate.side as NodeAnchorSide,
+    ratio,
+  };
 }
 
 export function parseSeataJsonToGraph(raw: SeataStateMachineJson): SagaGraph {
@@ -164,6 +192,9 @@ export function parseSeataJsonToGraph(raw: SeataStateMachineJson): SagaGraph {
     if (Array.isArray(def.Catch)) {
       def.Catch.forEach((catchItem) => {
         if (catchItem.Next && nodeIdSet.has(catchItem.Next)) {
+          const sourceAnchor = parseEdgeAnchorOverride(
+            def.edge?.[catchItem.Next]?.style?.sourceAnchor
+          );
           edges.push({
             id: `edge_${edgeSeq++}`,
             source: stateName,
@@ -172,6 +203,7 @@ export function parseSeataJsonToGraph(raw: SeataStateMachineJson): SagaGraph {
             exceptions: Array.isArray(catchItem.Exceptions)
               ? [...catchItem.Exceptions]
               : ['java.lang.Throwable'],
+            ...(sourceAnchor ? { sourceAnchor } : {}),
           });
         }
       });
@@ -340,6 +372,29 @@ export function serializeGraphToSeataJson(
           height: Math.round(node.height),
         },
       };
+
+      const anchoredCatchEdges = catchEdges.filter(
+        (e) => e.sourceAnchor && nodeById.has(e.target)
+      );
+      if (anchoredCatchEdges.length > 0) {
+        const edgeStyleMap: Record<
+          string,
+          { style?: { sourceAnchor?: EdgeAnchorOverride } }
+        > = {};
+        anchoredCatchEdges.forEach((e) => {
+          const targetName = nodeById.get(e.target)!.name;
+          if (!e.sourceAnchor) return;
+          edgeStyleMap[targetName] = {
+            style: {
+              sourceAnchor: {
+                side: e.sourceAnchor.side,
+                ratio: Number(e.sourceAnchor.ratio.toFixed(3)),
+              },
+            },
+          };
+        });
+        def.edge = edgeStyleMap;
+      }
     }
 
     states[node.name] = def;
@@ -401,13 +456,18 @@ export function renameStateInGraph(
 export function autoLayoutGraph(graph: SagaGraph): SagaGraph {
   const startNode = graph.nodes.find((n) => n.type === 'StartState');
   const forwardAdjacency = new Map<string, string[]>();
+  const catchAdjacency = new Map<string, string[]>();
   const compensationTargets = new Map<string, string>();
   const nodeById = new Map<string, SagaNode>(graph.nodes.map((n) => [n.id, n]));
 
   graph.edges.forEach((e) => {
     if (e.type === 'Compensation') {
       compensationTargets.set(e.source, e.target);
-    } else if (e.type !== 'Catch') {
+    } else if (e.type === 'Catch') {
+      const list = catchAdjacency.get(e.source) ?? [];
+      list.push(e.target);
+      catchAdjacency.set(e.source, list);
+    } else {
       const list = forwardAdjacency.get(e.source) ?? [];
       list.push(e.target);
       forwardAdjacency.set(e.source, list);
@@ -445,17 +505,67 @@ export function autoLayoutGraph(graph: SagaGraph): SagaGraph {
     }
   }
 
+  // Identify Catch-only handler branch nodes (e.g., ServiceTask / ScriptTask /
+  // SubStateMachine like NotifyOpsIfNeeded that are only reachable via Catch)
+  // so they stay in the exception corridor below their Catch source instead of
+  // being stranded at the far right of the main happy-path spine.
+  const catchBranchOrigin = new Map<string, { sourceId: string; step: number }>();
+  const catchQueue: Array<{ nodeId: string; sourceId: string; step: number }> = [];
+
+  catchAdjacency.forEach((targets, sourceId) => {
+    targets.forEach((targetId) => {
+      if (
+        !levelMap.has(targetId) &&
+        !compTargetSet.has(targetId) &&
+        !exceptionTerminalSet.has(targetId) &&
+        !catchBranchOrigin.has(targetId)
+      ) {
+        catchBranchOrigin.set(targetId, { sourceId, step: 0 });
+        catchQueue.push({ nodeId: targetId, sourceId, step: 0 });
+      }
+    });
+  });
+
+  while (catchQueue.length > 0) {
+    const current = catchQueue.shift()!;
+    const neighbors = [
+      ...(forwardAdjacency.get(current.nodeId) ?? []),
+      ...(catchAdjacency.get(current.nodeId) ?? []),
+    ];
+    for (const next of neighbors) {
+      if (
+        !levelMap.has(next) &&
+        !compTargetSet.has(next) &&
+        !exceptionTerminalSet.has(next) &&
+        !catchBranchOrigin.has(next)
+      ) {
+        catchBranchOrigin.set(next, {
+          sourceId: current.sourceId,
+          step: current.step + 1,
+        });
+        catchQueue.push({
+          nodeId: next,
+          sourceId: current.sourceId,
+          step: current.step + 1,
+        });
+      }
+    }
+  }
+
+  const catchBranchSet = new Set(catchBranchOrigin.keys());
+
   let maxLevel = 0;
   levelMap.forEach((lvl) => {
     if (lvl > maxLevel) maxLevel = lvl;
   });
 
-  // Assign levels to unvisited non-compensation, non-exception nodes
+  // Assign levels to unvisited non-compensation, non-exception, non-catch-branch nodes
   graph.nodes.forEach((node) => {
     if (
       !levelMap.has(node.id) &&
       !compTargetSet.has(node.id) &&
-      !exceptionTerminalSet.has(node.id)
+      !exceptionTerminalSet.has(node.id) &&
+      !catchBranchSet.has(node.id)
     ) {
       maxLevel += 1;
       levelMap.set(node.id, maxLevel);
@@ -464,7 +574,13 @@ export function autoLayoutGraph(graph: SagaGraph): SagaGraph {
 
   const columns = new Map<number, SagaNode[]>();
   graph.nodes.forEach((node) => {
-    if (compTargetSet.has(node.id) || exceptionTerminalSet.has(node.id)) return;
+    if (
+      compTargetSet.has(node.id) ||
+      exceptionTerminalSet.has(node.id) ||
+      catchBranchSet.has(node.id)
+    ) {
+      return;
+    }
     const lvl = levelMap.get(node.id) ?? 0;
     const col = columns.get(lvl) ?? [];
     col.push(node);
@@ -505,6 +621,68 @@ export function autoLayoutGraph(graph: SagaGraph): SagaGraph {
     }
   });
 
+  // Place Catch-only handler nodes cleanly below their Catch source(s)
+  const catchBranchNodes = graph.nodes.filter((n) => catchBranchSet.has(n.id));
+  const catchSlotCountBySource = new Map<string, number>();
+  catchBranchNodes.forEach((node) => {
+    const origin = catchBranchOrigin.get(node.id);
+    const incomingCatchSources = graph.edges
+      .filter((e) => e.target === node.id && e.type === 'Catch')
+      .map((e) => {
+        const p = positions.get(e.source);
+        const s = nodeById.get(e.source);
+        return p && s
+          ? { id: e.source, cx: p.x + s.width / 2, bottom: p.y + s.height }
+          : null;
+      })
+      .filter(
+        (v): v is { id: string; cx: number; bottom: number } => v !== null
+      );
+
+    if (incomingCatchSources.length > 0 && origin && origin.step === 0) {
+      const avgCx =
+        incomingCatchSources.reduce((sum, item) => sum + item.cx, 0) /
+        incomingCatchSources.length;
+      const maxBottom = Math.max(
+        ...incomingCatchSources.map((item) => item.bottom)
+      );
+      const hasCompBelow = incomingCatchSources.some((item) =>
+        compensationTargets.has(item.id)
+      );
+      const slotKey = origin.sourceId;
+      const slotIndex = catchSlotCountBySource.get(slotKey) ?? 0;
+      catchSlotCountBySource.set(slotKey, slotIndex + 1);
+
+      const offsetX =
+        slotIndex === 0
+          ? hasCompBelow
+            ? 120
+            : 0
+          : slotIndex * (node.width + 44);
+      const offsetY = hasCompBelow ? 228 : 124;
+
+      positions.set(node.id, {
+        x: Math.max(60, Math.round(avgCx - node.width / 2 + offsetX)),
+        y: Math.round(maxBottom + offsetY),
+      });
+    } else if (origin) {
+      const srcPos = positions.get(origin.sourceId);
+      const srcNode = nodeById.get(origin.sourceId);
+      const baseCx =
+        srcPos && srcNode ? srcPos.x + srcNode.width / 2 : baseX + 2 * colSpacing;
+      const baseBottom =
+        srcPos && srcNode ? srcPos.y + srcNode.height : spineCenterY + 34;
+      const hasCompBelow = compensationTargets.has(origin.sourceId);
+      positions.set(node.id, {
+        x: Math.max(
+          60,
+          Math.round(baseCx - node.width / 2 + origin.step * (node.width + 64))
+        ),
+        y: Math.round(baseBottom + (hasCompBelow ? 228 : 124)),
+      });
+    }
+  });
+
   // Place exception/rollback terminals (CompensationTrigger, Fail) cleanly in the
   // central/bottom exception corridor near their incoming sources
   const exceptionNodes = graph.nodes.filter((n) => exceptionTerminalSet.has(n.id));
@@ -514,18 +692,24 @@ export function autoLayoutGraph(graph: SagaGraph): SagaGraph {
       .map((e) => {
         const p = positions.get(e.source);
         const s = nodeById.get(e.source);
-        return p && s ? p.x + s.width / 2 : null;
+        return p && s
+          ? { cx: p.x + s.width / 2, bottom: p.y + s.height }
+          : null;
       })
-      .filter((v): v is number => v !== null);
+      .filter((v): v is { cx: number; bottom: number } => v !== null);
     const avgCx =
       incomingSources.length > 0
-        ? incomingSources.reduce((a, b) => a + b, 0) / incomingSources.length
+        ? incomingSources.reduce((a, b) => a + b.cx, 0) / incomingSources.length
         : baseX + (idx + 2) * colSpacing;
+    const maxIncomingBottom =
+      incomingSources.length > 0
+        ? Math.max(...incomingSources.map((s) => s.bottom))
+        : spineCenterY + 200;
     const laneCenterY =
       node.type === 'Fail' &&
       graph.edges.some((e) => e.target === node.id && e.type === 'Default')
         ? spineCenterY + 178
-        : spineCenterY + 324;
+        : Math.max(spineCenterY + 324, maxIncomingBottom + 108);
     positions.set(node.id, {
       x: Math.max(60, Math.round(avgCx - node.width / 2)),
       y: Math.round(laneCenterY - node.height / 2),
@@ -537,6 +721,12 @@ export function autoLayoutGraph(graph: SagaGraph): SagaGraph {
     nodes: graph.nodes.map((node) => {
       const pos = positions.get(node.id);
       return pos ? { ...node, x: pos.x, y: pos.y } : node;
+    }),
+    // Reset stale manual Catch anchor pins whenever full auto-layout runs
+    edges: graph.edges.map((edge) => {
+      if (!edge.sourceAnchor) return edge;
+      const { sourceAnchor: _cleared, ...rest } = edge;
+      return rest;
     }),
   };
 
@@ -636,6 +826,16 @@ export function exportGraphToSvg(graph: SagaGraph): string {
     })
     .join('\n  ');
 
+  const catchMarkersSvg = graph.edges
+    .map((e) => {
+      const route = routedEdges.get(e.id);
+      if (!route || !route.catchAnchor) return '';
+      const { x, y } = route.catchAnchor.borderPoint;
+      return `<g data-catch-marker="${escapeXml(e.id)}" data-catch-side="${route.catchAnchor.side}"><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="9" fill="#FFFBEB" stroke="#D97706" stroke-width="2" /><text x="${x.toFixed(1)}" y="${(y + 3.5).toFixed(1)}" font-family="sans-serif" font-size="10" font-weight="700" fill="#B45309" text-anchor="middle">!</text></g>`;
+    })
+    .filter(Boolean)
+    .join('\n  ');
+
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX} ${minY} ${width} ${height}" width="${width}" height="${height}" style="background:#F8FAFC">
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -644,6 +844,7 @@ export function exportGraphToSvg(graph: SagaGraph): string {
   </defs>
   ${edgesSvg}
   ${nodesSvg}
+  ${catchMarkersSvg}
   ${edgeLabelsSvg}
 </svg>`;
 }

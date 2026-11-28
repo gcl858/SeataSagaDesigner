@@ -56,8 +56,17 @@ export interface SeataStateStyle {
   bounds?: Bounds;
 }
 
+export type NodeAnchorSide = 'top' | 'right' | 'bottom' | 'left';
+
+export interface EdgeAnchorOverride {
+  side: NodeAnchorSide;
+  /** Normalized offset along the chosen side (0..1, clamped away from rounded corners). */
+  ratio: number;
+}
+
 export interface SeataEdgeStyle {
   waypoints?: Point[];
+  sourceAnchor?: EdgeAnchorOverride;
 }
 
 export interface SeataStateDefinition {
@@ -145,6 +154,8 @@ export interface SagaEdge {
   expression?: string;
   exceptions?: string[];
   isDefault?: boolean;
+  /** Optional user-pinned perimeter anchor on the source node (e.g. dragged Catch boundary event). */
+  sourceAnchor?: EdgeAnchorOverride;
 }
 
 export interface SagaMachineMeta {

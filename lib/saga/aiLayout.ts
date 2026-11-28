@@ -961,7 +961,7 @@ export function applyAiLayoutToGraph(
   const baseGraph: SagaGraph = {
     meta: { ...graph.meta },
     nodes: positionedNodes,
-    edges: graph.edges.map((e) => ({ ...e })),
+    edges: graph.edges.map(({ sourceAnchor: _cleared, ...e }) => ({ ...e })),
     ...(graph.yamlTemplate !== undefined
       ? { yamlTemplate: graph.yamlTemplate }
       : {}),

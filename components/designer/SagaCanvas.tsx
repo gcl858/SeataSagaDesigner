@@ -22,7 +22,9 @@ import {
   FolderOpen,
 } from 'lucide-react';
 import {
+  EdgeAnchorOverride,
   Point,
+  SagaEdge,
   SagaGraph,
   SagaNode,
   SeataEdgeType,
@@ -30,7 +32,12 @@ import {
   SimulationResult,
   ValidationIssue,
 } from '@/lib/saga/types';
-import { computeGraphEdgeRoutes, getNodeCenter } from '@/lib/saga/edgeRouting';
+import {
+  computeGraphEdgeRoutes,
+  getNodeCenter,
+  projectPointToNodePerimeter,
+  RoutedCatchAnchor,
+} from '@/lib/saga/edgeRouting';
 import { InteractionMode } from './ElementPalette';
 import { Locale, UI_COPY } from '@/lib/saga/i18n';
 
@@ -46,6 +53,11 @@ interface SagaCanvasProps {
   onSelectNode: (nodeId: string | null) => void;
   onSelectEdge: (edgeId: string | null) => void;
   onMoveNode: (nodeId: string, x: number, y: number, commit: boolean) => void;
+  onUpdateEdgeAnchor?: (
+    edgeId: string,
+    anchor: EdgeAnchorOverride | undefined,
+    commit: boolean
+  ) => void;
   onDropNewNode: (type: SeataStateType, x: number, y: number) => void;
   onConnectNodes: (sourceId: string, targetId: string, edgeType?: SeataEdgeType) => void;
   onQuickAppendNode: (sourceId: string, targetType: SeataStateType, asCompensation?: boolean) => void;
@@ -68,6 +80,7 @@ export default function SagaCanvas({
   onSelectNode,
   onSelectEdge,
   onMoveNode,
+  onUpdateEdgeAnchor,
   onDropNewNode,
   onConnectNodes,
   onQuickAppendNode,
@@ -105,6 +118,14 @@ export default function SagaCanvas({
     cursor: Point;
   } | null>(null);
 
+  const [draggingCatchAnchor, setDraggingCatchAnchor] = useState<{
+    edgeId: string;
+    sourceId: string;
+    startClientX: number;
+    startClientY: number;
+    moved: boolean;
+  } | null>(null);
+
   const nodeMap = useMemo(
     () => new Map(graph.nodes.map((n) => [n.id, n])),
     [graph.nodes]
@@ -121,14 +142,6 @@ export default function SagaCanvas({
     });
     return map;
   }, [validationIssues]);
-
-  const nodesWithCatch = useMemo(() => {
-    const set = new Set<string>();
-    graph.edges.forEach((e) => {
-      if (e.type === 'Catch') set.add(e.source);
-    });
-    return set;
-  }, [graph.edges]);
 
   // Simulation highlights up to activeSimStepIndex
   const simHighlights = useMemo(() => {
@@ -215,10 +228,24 @@ export default function SagaCanvas({
   };
 
   useEffect(() => {
-    if (!draggingNode && !panning && !connectingFrom) return;
+    if (!draggingNode && !panning && !connectingFrom && !draggingCatchAnchor) return;
 
     const handleMouseMove = (e: MouseEvent) => {
-      if (draggingNode) {
+      if (draggingCatchAnchor) {
+        const dist = Math.hypot(
+          e.clientX - draggingCatchAnchor.startClientX,
+          e.clientY - draggingCatchAnchor.startClientY
+        );
+        if (!draggingCatchAnchor.moved && dist > 3) {
+          setDraggingCatchAnchor((prev) => (prev ? { ...prev, moved: true } : null));
+        }
+        const sourceNode = nodeMap.get(draggingCatchAnchor.sourceId);
+        if (sourceNode && onUpdateEdgeAnchor && dist > 3) {
+          const pt = screenToCanvas(e.clientX, e.clientY);
+          const nextAnchor = projectPointToNodePerimeter(sourceNode, pt);
+          onUpdateEdgeAnchor(draggingCatchAnchor.edgeId, nextAnchor, false);
+        }
+      } else if (draggingNode) {
         const dx = (e.clientX - draggingNode.startClientX) / zoom;
         const dy = (e.clientY - draggingNode.startClientY) / zoom;
         if (!draggingNode.moved && Math.hypot(dx, dy) > 3) {
@@ -239,6 +266,21 @@ export default function SagaCanvas({
     };
 
     const handleMouseUp = (e: MouseEvent) => {
+      if (draggingCatchAnchor) {
+        const dist = Math.hypot(
+          e.clientX - draggingCatchAnchor.startClientX,
+          e.clientY - draggingCatchAnchor.startClientY
+        );
+        if ((draggingCatchAnchor.moved || dist > 3) && onUpdateEdgeAnchor) {
+          const sourceNode = nodeMap.get(draggingCatchAnchor.sourceId);
+          if (sourceNode) {
+            const pt = screenToCanvas(e.clientX, e.clientY);
+            const nextAnchor = projectPointToNodePerimeter(sourceNode, pt);
+            onUpdateEdgeAnchor(draggingCatchAnchor.edgeId, nextAnchor, true);
+          }
+        }
+        setDraggingCatchAnchor(null);
+      }
       if (draggingNode) {
         if (draggingNode.moved) {
           const dx = (e.clientX - draggingNode.startClientX) / zoom;
@@ -278,12 +320,15 @@ export default function SagaCanvas({
       window.removeEventListener('mouseup', handleMouseUp);
     };
   }, [
+    draggingCatchAnchor,
     draggingNode,
     panning,
     connectingFrom,
     zoom,
     graph.nodes,
+    nodeMap,
     onMoveNode,
+    onUpdateEdgeAnchor,
     onConnectNodes,
     onChangeMode,
     screenToCanvas,
@@ -371,12 +416,17 @@ export default function SagaCanvas({
     [graph.nodes, graph.edges]
   );
 
-  // Align each node's Catch boundary icon with the actual Catch wire anchor side
-  const nodeCatchSide = useMemo(() => {
-    const map = new Map<string, 'left' | 'right' | 'center'>();
+  // Group dynamic 360° Catch boundary anchors by source node
+  const catchAnchorsBySource = useMemo(() => {
+    const map = new Map<
+      string,
+      Array<{ edge: SagaEdge; anchor: RoutedCatchAnchor }>
+    >();
     routedEdges.forEach((route) => {
-      if (route.edge.type === 'Catch' && route.catchAnchorSide) {
-        map.set(route.edge.source, route.catchAnchorSide);
+      if (route.edge.type === 'Catch' && route.catchAnchor) {
+        const list = map.get(route.edge.source) ?? [];
+        list.push({ edge: route.edge, anchor: route.catchAnchor });
+        map.set(route.edge.source, list);
       }
     });
     return map;
@@ -642,7 +692,7 @@ export default function SagaCanvas({
         {graph.nodes.map((node) => {
           const isSelected = selectedNodeId === node.id;
           const severity = nodeIssueSeverity.get(node.id);
-          const hasCatch = nodesWithCatch.has(node.id);
+          const nodeCatchAnchors = catchAnchorsBySource.get(node.id) ?? [];
           const isSimActive = simHighlights.activeNodeId === node.id;
           const isSimVisited = simHighlights.visitedNodes.has(node.id);
           const isSimCompensated = simHighlights.compensatedNodes.has(node.id);
@@ -817,21 +867,66 @@ export default function SagaCanvas({
                 </button>
               )}
 
-              {/* Attached Catch Boundary Marker (BPMN / Seata style) */}
-              {hasCatch && (
-                <div
-                  title="Exception Catch Boundary"
-                  className={`absolute -bottom-2.5 w-5 h-5 rounded-full bg-amber-50 dark:bg-amber-950 border-2 border-amber-600 dark:border-amber-400 flex items-center justify-center pointer-events-none ${
-                    nodeCatchSide.get(node.id) === 'left'
-                      ? 'left-4'
-                      : nodeCatchSide.get(node.id) === 'center'
-                        ? 'left-1/2 -translate-x-1/2'
-                        : 'right-4'
-                  }`}
-                >
-                  <AlertOctagon className="w-3 h-3 text-amber-600 dark:text-amber-400" />
-                </div>
-              )}
+              {/* Dynamic 360° Attached Catch Boundary Markers (draggable along node perimeter) */}
+              {nodeCatchAnchors.map(({ edge, anchor }) => {
+                const isCatchSelected = selectedEdgeId === edge.id;
+                const isCatchDragging = draggingCatchAnchor?.edgeId === edge.id;
+                const targetNode = nodeMap.get(edge.target);
+                const targetLabel = targetNode?.name ?? edge.target;
+                const tooltipText =
+                  locale === 'zh-TW'
+                    ? `Catch → ${targetLabel}（沿節點邊緣拖曳調整位置，雙擊恢復自動 360° 追蹤）`
+                    : `Catch → ${targetLabel} (drag along border to reposition, double-click to reset to auto)`;
+
+                return (
+                  <button
+                    key={`catch-anchor-${edge.id}`}
+                    type="button"
+                    data-testid={`catch-anchor-${edge.id}`}
+                    data-catch-target={edge.target}
+                    data-catch-side={anchor.side}
+                    data-catch-custom={anchor.isCustom ? 'true' : 'false'}
+                    aria-label={tooltipText}
+                    title={tooltipText}
+                    style={{
+                      left: anchor.borderPoint.x - node.x,
+                      top: anchor.borderPoint.y - node.y,
+                      transform: 'translate(-50%, -50%)',
+                    }}
+                    onMouseDown={(ev) => {
+                      ev.stopPropagation();
+                      onSelectEdge(edge.id);
+                      if (mode === 'select' && onUpdateEdgeAnchor) {
+                        setDraggingCatchAnchor({
+                          edgeId: edge.id,
+                          sourceId: node.id,
+                          startClientX: ev.clientX,
+                          startClientY: ev.clientY,
+                          moved: false,
+                        });
+                      }
+                    }}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      onSelectEdge(edge.id);
+                    }}
+                    onDoubleClick={(ev) => {
+                      ev.stopPropagation();
+                      setDraggingCatchAnchor(null);
+                      onUpdateEdgeAnchor?.(edge.id, undefined, true);
+                    }}
+                    className={`absolute z-20 w-5 h-5 rounded-full flex items-center justify-center transition-shadow cursor-grab active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 ${
+                      isCatchSelected || isCatchDragging
+                        ? 'bg-amber-100 dark:bg-amber-900 border-2 border-blue-600 dark:border-blue-400 ring-2 ring-blue-500/40 scale-110'
+                        : anchor.isCustom
+                          ? 'bg-amber-100 dark:bg-amber-950 border-2 border-amber-700 dark:border-amber-300 shadow-xs hover:scale-110'
+                          : 'bg-amber-50 dark:bg-amber-950 border-2 border-amber-600 dark:border-amber-400 hover:scale-110'
+                    }`}
+                  >
+                    <AlertOctagon className="w-3 h-3 text-amber-600 dark:text-amber-400 pointer-events-none" />
+                  </button>
+                );
+              })}
 
               {/* Validation Error/Warning Marker */}
               {severity && (

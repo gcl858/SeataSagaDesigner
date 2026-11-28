@@ -69,4 +69,76 @@ test('autoLayoutGraph positions compensation tasks below their source tasks and 
   assert.ok(svg.startsWith('<svg'));
   assert.ok(svg.includes('ReduceInventory'));
   assert.ok(svg.includes('CompensateReduceInventory'));
+  assert.ok(svg.includes('data-catch-marker='));
+});
+
+test('autoLayoutGraph places Catch-only ServiceTask (NotifyOpsIfNeeded) cleanly in the Catch lane and round-trips pinned sourceAnchor', () => {
+  const graph = parseSeataJsonToGraph({
+    Name: 'opsAlertDemo',
+    StartState: 'ProcessOrder',
+    Version: '0.0.1',
+    States: {
+      ProcessOrder: {
+        Type: 'ServiceTask',
+        ServiceName: 'orderService',
+        ServiceMethod: 'process',
+        Next: 'Succeed',
+        Catch: [
+          {
+            Exceptions: ['java.lang.Throwable'],
+            Next: 'NotifyOpsIfNeeded',
+          },
+        ],
+      },
+      NotifyOpsIfNeeded: {
+        Type: 'ServiceTask',
+        ServiceName: 'opsAlertService',
+        ServiceMethod: 'notify',
+        Next: 'Fail',
+      },
+      Succeed: { Type: 'Succeed' },
+      Fail: { Type: 'Fail', ErrorCode: 'OPS_ALERT', Message: 'Notified ops' },
+    },
+  });
+
+  const processNode = graph.nodes.find((n) => n.id === 'ProcessOrder')!;
+  const notifyNode = graph.nodes.find((n) => n.id === 'NotifyOpsIfNeeded')!;
+  const succeedNode = graph.nodes.find((n) => n.id === 'Succeed')!;
+
+  // NotifyOpsIfNeeded should be placed below ProcessOrder in the exception corridor, NOT stranded to the right of Succeed
+  assert.ok(notifyNode.y > processNode.y + processNode.height);
+  assert.ok(notifyNode.x < succeedNode.x + succeedNode.width);
+
+  // Pinning a custom Catch anchor persists when includeLayout=true and omits when includeLayout=false
+  const catchEdge = graph.edges.find((e) => e.type === 'Catch')!;
+  const pinnedGraph = {
+    ...graph,
+    edges: graph.edges.map((e) =>
+      e.id === catchEdge.id
+        ? { ...e, sourceAnchor: { side: 'top' as const, ratio: 0.4 } }
+        : e
+    ),
+  };
+
+  const withLayout = serializeGraphToSeataJson(pinnedGraph, { includeLayout: true });
+  assert.deepEqual(
+    withLayout.States.ProcessOrder.edge?.NotifyOpsIfNeeded?.style?.sourceAnchor,
+    { side: 'top', ratio: 0.4 }
+  );
+
+  const restored = parseSeataJsonToGraph(withLayout);
+  const restoredCatch = restored.edges.find((e) => e.type === 'Catch')!;
+  assert.deepEqual(restoredCatch.sourceAnchor, { side: 'top', ratio: 0.4 });
+
+  const withoutLayout = serializeGraphToSeataJson(pinnedGraph, { includeLayout: false });
+  assert.equal(withoutLayout.States.ProcessOrder.edge, undefined);
+
+  // SVG export includes the Catch boundary marker on the pinned top side
+  const svg = exportGraphToSvg(restored);
+  assert.ok(svg.includes('data-catch-side="top"'));
+
+  // Full autoLayoutGraph clears stale manual anchor pins so Catch returns to auto 360° tracking
+  const relaidOut = autoLayoutGraph(restored);
+  const relaidCatch = relaidOut.edges.find((e) => e.type === 'Catch')!;
+  assert.equal(relaidCatch.sourceAnchor, undefined);
 });

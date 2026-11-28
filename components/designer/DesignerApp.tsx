@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react';
 import { AlertTriangle, ChevronLeft, ChevronRight, Layers, X } from 'lucide-react';
 import {
+  EdgeAnchorOverride,
   MockOutcome,
   NODE_DIMENSIONS,
   NodeSimulationOverride,
@@ -747,6 +748,33 @@ export default function DesignerApp() {
     [commitGraph]
   );
 
+  const handleUpdateEdgeAnchor = useCallback(
+    (
+      edgeId: string,
+      anchor: EdgeAnchorOverride | undefined,
+      commit: boolean
+    ) => {
+      const applyAnchor = (g: SagaGraph): SagaGraph => ({
+        ...g,
+        edges: g.edges.map((e) => {
+          if (e.id !== edgeId) return e;
+          if (!anchor) {
+            const { sourceAnchor: _removed, ...rest } = e;
+            return rest;
+          }
+          return { ...e, sourceAnchor: anchor };
+        }),
+      });
+
+      if (commit) {
+        commitGraph(applyAnchor);
+      } else {
+        setWorkspace((prev) => updateActiveGraphTransient(prev, applyAnchor));
+      }
+    },
+    [commitGraph]
+  );
+
   const handleDeleteEdge = useCallback(
     (edgeId: string) => {
       commitGraph((prev) => ({
@@ -1373,6 +1401,7 @@ export default function DesignerApp() {
                 if (id) setSelectionNonce((n) => n + 1);
               }}
               onMoveNode={handleMoveNode}
+              onUpdateEdgeAnchor={handleUpdateEdgeAnchor}
               onDropNewNode={(type, x, y) => handleAddNode(type, x, y)}
               onConnectNodes={handleConnectNodes}
               onQuickAppendNode={handleQuickAppendNode}
