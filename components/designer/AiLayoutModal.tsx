@@ -6,8 +6,10 @@ import {
   AlertTriangle,
   ArrowRight,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Clock,
   Columns3,
   Copy,
   GitCompareArrows,
@@ -20,16 +22,21 @@ import {
   Sparkles,
   Wand2,
   X,
+  XCircle,
 } from 'lucide-react';
 import {
   AI_LAYOUT_QUICK_PROMPTS,
   AI_LAYOUT_STYLES,
+  AI_LAYOUT_TIMEOUT_MS,
+  AI_LAYOUT_TIMEOUT_SECONDS,
   AiLayoutPlan,
   AiLayoutResponsePayload,
   AiLayoutStyle,
   applyAiLayoutToGraph,
   computeLayoutMetrics,
   DEFAULT_MINIMAX_MODEL,
+  formatAiLayoutDuration,
+  formatLiveElapsedTimer,
   LayoutQualityMetrics,
   MINIMAX_MODEL_OPTIONS,
 } from '@/lib/saga/aiLayout';
@@ -51,7 +58,7 @@ interface AiLayoutModalProps {
   onClose: () => void;
   graph: SagaGraph;
   locale: Locale;
-  onApplyLayout: (nextGraph: SagaGraph, summary: string) => void;
+  onApplyLayout: (nextGraph: SagaGraph, summary: string, durationMs?: number) => void;
   onRunBasicAutoLayout: () => void;
 }
 
@@ -62,6 +69,7 @@ interface GeneratedState {
   metricsBefore: LayoutQualityMetrics;
   metricsAfter: LayoutQualityMetrics;
   model: string;
+  durationMs: number;
 }
 
 const STYLE_ICONS: Record<AiLayoutStyle, React.ReactNode> = {
@@ -314,6 +322,8 @@ export default function AiLayoutModal({
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [loadingNotice, setLoadingNotice] = useState<string | null>(null);
+  const [elapsedMs, setElapsedMs] = useState<number>(0);
+  const [cancelledNotice, setCancelledNotice] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [errorHint, setErrorHint] = useState<string | null>(null);
   const [errorDiagnostics, setErrorDiagnostics] =
@@ -324,6 +334,8 @@ export default function AiLayoutModal({
   const [probeSummary, setProbeSummary] = useState<string | null>(null);
   const [generated, setGenerated] = useState<GeneratedState | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const requestStartRef = useRef<number | null>(null);
+  const requestSeqRef = useRef<number>(0);
 
   const graphSignature = useMemo(
     () =>
@@ -337,19 +349,37 @@ export default function AiLayoutModal({
     generated && generated.graphSignature === graphSignature ? generated : null;
 
   const handleCloseSafely = () => {
+    requestSeqRef.current += 1;
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
+    requestStartRef.current = null;
     setLoading(false);
+    setLoadingNotice(null);
+    setElapsedMs(0);
     onClose();
   };
+
+  useEffect(() => {
+    if (!loading) return;
+    const id = window.setInterval(() => {
+      if (requestStartRef.current !== null) {
+        setElapsedMs(Math.max(0, performance.now() - requestStartRef.current));
+      }
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [loading]);
 
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        requestSeqRef.current += 1;
         abortControllerRef.current?.abort();
         abortControllerRef.current = null;
+        requestStartRef.current = null;
         setLoading(false);
+        setLoadingNotice(null);
+        setElapsedMs(0);
         onClose();
       }
     };
@@ -361,16 +391,34 @@ export default function AiLayoutModal({
 
   useEffect(() => {
     return () => {
+      requestSeqRef.current += 1;
       abortControllerRef.current?.abort();
+      requestStartRef.current = null;
     };
   }, []);
 
   if (!open) return null;
 
   const handleCancelRequest = () => {
+    const waitedMs =
+      requestStartRef.current !== null
+        ? Math.max(0, performance.now() - requestStartRef.current)
+        : elapsedMs;
+    requestSeqRef.current += 1;
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
+    requestStartRef.current = null;
     setLoading(false);
+    setLoadingNotice(null);
+    setElapsedMs(0);
+    setErrorMessage(null);
+    setErrorHint(null);
+    setErrorDiagnostics(null);
+    setCancelledNotice(
+      locale === 'zh-TW'
+        ? `已取消 AI 排版請求（已等待 ${formatAiLayoutDuration(waitedMs, 'zh-TW')}），您可以調整排版策略或隨時重新產生。`
+        : `AI layout request cancelled after ${formatAiLayoutDuration(waitedMs, 'en')}. Adjust settings or regenerate anytime.`
+    );
   };
 
   const handleProbeEndpoint = async () => {
@@ -390,10 +438,14 @@ export default function AiLayoutModal({
       if (parsed.ok && parsed.data.ok === true) {
         const keyReady = Boolean(parsed.data.apiKeyConfigured);
         const host = typeof parsed.data.baseUrlHost === 'string' ? parsed.data.baseUrlHost : 'api.minimax.io';
+        const timeoutSec =
+          typeof parsed.data.timeoutSeconds === 'number'
+            ? parsed.data.timeoutSeconds
+            : AI_LAYOUT_TIMEOUT_SECONDS;
         setProbeSummary(
           locale === 'zh-TW'
-            ? `端點連線正常 (HTTP ${res.status} · Next.js API Route)｜MINIMAX_API_KEY：${keyReady ? '已設定' : '未設定'}｜目標主機：${host}`
-            : `Endpoint reachable (HTTP ${res.status} · Next.js API Route) | MINIMAX_API_KEY: ${keyReady ? 'Configured' : 'Missing'} | Host: ${host}`
+            ? `端點連線正常 (HTTP ${res.status} · Next.js API Route)｜MINIMAX_API_KEY：${keyReady ? '已設定' : '未設定'}｜目標主機：${host}｜逾時上限：${timeoutSec} 秒`
+            : `Endpoint reachable (HTTP ${res.status} · Next.js API Route) | MINIMAX_API_KEY: ${keyReady ? 'Configured' : 'Missing'} | Host: ${host} | Timeout: ${timeoutSec}s`
         );
       } else {
         const diag = diagnoseNonJsonAiResponse(
@@ -456,14 +508,21 @@ export default function AiLayoutModal({
     abortControllerRef.current?.abort();
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    const reqSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = reqSeq;
+    const startedAt = performance.now();
+    requestStartRef.current = startedAt;
+
     let didTimeout = false;
     const timeoutId = window.setTimeout(() => {
       didTimeout = true;
       controller.abort();
-    }, 120000);
+    }, AI_LAYOUT_TIMEOUT_MS);
 
     setLoading(true);
+    setElapsedMs(0);
     setLoadingNotice(null);
+    setCancelledNotice(null);
     setErrorMessage(null);
     setErrorHint(null);
     setErrorDiagnostics(null);
@@ -612,10 +671,15 @@ export default function AiLayoutModal({
         return;
       }
 
+      if (controller.signal.aborted || requestSeqRef.current !== reqSeq) {
+        return;
+      }
+
       const previewGraph = applyAiLayoutToGraph(graph, data.plan.positions, {
         style,
         resolveOverlaps: false,
       });
+      const durationMs = Math.max(1, Math.round(performance.now() - startedAt));
 
       setGenerated({
         graphSignature,
@@ -624,14 +688,18 @@ export default function AiLayoutModal({
         metricsBefore: data.metricsBefore,
         metricsAfter: data.metricsAfter,
         model: data.model,
+        durationMs,
       });
     } catch (err) {
+      if (requestSeqRef.current !== reqSeq) {
+        return;
+      }
       if (err instanceof DOMException && err.name === 'AbortError') {
         if (didTimeout) {
           setErrorMessage(
             locale === 'zh-TW'
-              ? 'AI 排版回應逾時（超過 120 秒），請再試一次或改用本機自動排版。'
-              : 'AI layout request timed out after 120 seconds. Please retry or use local Auto Layout.'
+              ? `AI 排版回應逾時（超過 ${AI_LAYOUT_TIMEOUT_SECONDS} 秒），請再試一次或改用本機自動排版。`
+              : `AI layout request timed out after ${AI_LAYOUT_TIMEOUT_SECONDS} seconds. Please retry or use local Auto Layout.`
           );
           setErrorDiagnostics({
             category: 'timeout',
@@ -639,7 +707,7 @@ export default function AiLayoutModal({
             finalUrl: sanitizeUrlForDiagnostics(requestUrl),
             redirected: false,
             status: 0,
-            statusText: 'Client Timeout (120s)',
+            statusText: `Client Timeout (${AI_LAYOUT_TIMEOUT_SECONDS}s)`,
             contentType: '(none)',
             model: selectedModel,
             timestamp: new Date().toISOString(),
@@ -667,17 +735,24 @@ export default function AiLayoutModal({
       });
     } finally {
       window.clearTimeout(timeoutId);
-      if (abortControllerRef.current === controller) {
-        abortControllerRef.current = null;
+      if (requestSeqRef.current === reqSeq) {
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+        }
+        requestStartRef.current = null;
+        setLoading(false);
+        setLoadingNotice(null);
       }
-      setLoading(false);
-      setLoadingNotice(null);
     }
   };
 
   const handleApply = () => {
     if (!activeResult) return;
-    onApplyLayout(activeResult.previewGraph, activeResult.plan.summary);
+    onApplyLayout(
+      activeResult.previewGraph,
+      activeResult.plan.summary,
+      activeResult.durationMs
+    );
     onClose();
   };
 
@@ -886,10 +961,12 @@ export default function AiLayoutModal({
               {loading && (
                 <button
                   type="button"
+                  data-testid="btn-cancel-ai-layout"
                   onClick={handleCancelRequest}
-                  className="h-9 px-3 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg border border-red-300 dark:border-red-800/80 bg-red-50 dark:bg-red-950/40 text-xs font-semibold text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors cursor-pointer shrink-0"
                 >
-                  {locale === 'zh-TW' ? '中止' : 'Abort'}
+                  <XCircle className="w-3.5 h-3.5" />
+                  <span>{locale === 'zh-TW' ? '取消 AI 排版' : 'Cancel'}</span>
                 </button>
               )}
             </div>
@@ -1072,10 +1149,36 @@ export default function AiLayoutModal({
               </div>
             )}
 
+            {cancelledNotice && !loading && !errorMessage && (
+              <div
+                role="status"
+                data-testid="ai-layout-cancelled"
+                className="rounded-lg border border-amber-200 dark:border-amber-900/60 bg-amber-50/90 dark:bg-amber-950/35 px-3.5 py-2.5 flex items-start justify-between gap-2.5"
+              >
+                <div className="flex items-start gap-2 min-w-0">
+                  <XCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <span className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">
+                    {cancelledNotice}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCancelledNotice(null)}
+                  aria-label={locale === 'zh-TW' ? '關閉取消提示' : 'Dismiss cancellation notice'}
+                  className="p-0.5 rounded text-amber-700/70 hover:text-amber-900 dark:text-amber-300/70 dark:hover:text-amber-100 cursor-pointer shrink-0"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             {loading ? (
-              <div className="flex-1 min-h-[260px] rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 p-6 flex flex-col items-center justify-center text-center gap-3">
+              <div
+                data-testid="ai-layout-loading-panel"
+                className="flex-1 min-h-[260px] rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 p-6 flex flex-col items-center justify-center text-center gap-3.5"
+              >
                 <Loader2 className="w-7 h-7 text-blue-600 dark:text-blue-400 animate-spin" />
-                <div className="space-y-1 max-w-sm">
+                <div className="space-y-1.5 max-w-sm">
                   <p className="text-xs font-semibold text-slate-800 dark:text-slate-100">
                     {loadingNotice ||
                       (locale === 'zh-TW'
@@ -1088,12 +1191,75 @@ export default function AiLayoutModal({
                       : 'Planning swimlanes by state type, Choice branches, and Catch routes, followed by deterministic collision checking.'}
                   </p>
                 </div>
+
+                {/* Live elapsed time & 300s timeout indicator */}
+                <div className="w-full max-w-xs space-y-1.5">
+                  <div
+                    data-testid="ai-layout-live-elapsed"
+                    className="flex items-center justify-between text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-300"
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      <Clock className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                      <span>
+                        {locale === 'zh-TW'
+                          ? `已耗時 ${formatLiveElapsedTimer(elapsedMs)}`
+                          : `Elapsed ${formatLiveElapsedTimer(elapsedMs)}`}
+                      </span>
+                    </span>
+                    <span className="text-slate-500 dark:text-slate-400">
+                      {locale === 'zh-TW'
+                        ? `逾時上限 ${AI_LAYOUT_TIMEOUT_SECONDS} 秒`
+                        : `Limit ${AI_LAYOUT_TIMEOUT_SECONDS}s`}
+                    </span>
+                  </div>
+                  <progress
+                    max={AI_LAYOUT_TIMEOUT_MS}
+                    value={Math.min(AI_LAYOUT_TIMEOUT_MS, Math.max(AI_LAYOUT_TIMEOUT_MS * 0.02, elapsedMs))}
+                    aria-label={
+                      locale === 'zh-TW'
+                        ? `AI 排版等待進度（上限 ${AI_LAYOUT_TIMEOUT_SECONDS} 秒）`
+                        : `AI layout elapsed time (limit ${AI_LAYOUT_TIMEOUT_SECONDS}s)`
+                    }
+                    className="block h-1.5 w-full overflow-hidden rounded-full appearance-none bg-slate-200 dark:bg-slate-800 [&::-webkit-progress-bar]:bg-slate-200 dark:[&::-webkit-progress-bar]:bg-slate-800 [&::-webkit-progress-value]:bg-blue-600 dark:[&::-webkit-progress-value]:bg-blue-500 [&::-moz-progress-bar]:bg-blue-600"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  data-testid="btn-cancel-ai-layout-panel"
+                  onClick={handleCancelRequest}
+                  className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-md border border-red-300 dark:border-red-800/80 bg-white dark:bg-slate-900 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors cursor-pointer"
+                >
+                  <XCircle className="w-3.5 h-3.5" />
+                  <span>{locale === 'zh-TW' ? '取消排版' : 'Cancel Request'}</span>
+                </button>
               </div>
             ) : activeResult ? (
               <div
                 data-testid="ai-layout-result"
                 className="flex flex-col gap-3"
               >
+                {/* Success & Total Elapsed Time Banner */}
+                <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/70 bg-emerald-50/80 dark:bg-emerald-950/35 px-3 py-2 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-emerald-800 dark:text-emerald-200">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <span>
+                      {locale === 'zh-TW' ? 'AI 排版產生完成' : 'AI Layout Generated'}
+                    </span>
+                  </div>
+                  <div
+                    data-testid="ai-layout-duration"
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white/90 dark:bg-slate-900/80 border border-emerald-200/80 dark:border-emerald-800/60 text-xs font-mono font-semibold tabular-nums text-emerald-700 dark:text-emerald-300 shrink-0"
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>
+                      {locale === 'zh-TW'
+                        ? `總耗時 ${formatAiLayoutDuration(activeResult.durationMs, 'zh-TW')}`
+                        : `Total ${formatAiLayoutDuration(activeResult.durationMs, 'en')}`}
+                    </span>
+                  </div>
+                </div>
+
                 <LayoutMiniPreview
                   graph={activeResult.previewGraph}
                   label={
@@ -1227,7 +1393,13 @@ export default function AiLayoutModal({
             onClick={handleCloseSafely}
             className="h-8 px-3 rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800 transition-colors cursor-pointer"
           >
-            {locale === 'zh-TW' ? '取消' : 'Cancel'}
+            {loading
+              ? locale === 'zh-TW'
+                ? '取消並關閉'
+                : 'Cancel & Close'
+              : locale === 'zh-TW'
+                ? '關閉'
+                : 'Close'}
           </button>
 
           <div className="flex items-center gap-2">

@@ -52,6 +52,7 @@ import {
 } from '@/lib/saga/batchImport';
 import { runSagaSimulation } from '@/lib/saga/simulator';
 import { Locale, UI_COPY } from '@/lib/saga/i18n';
+import { formatAiLayoutDuration } from '@/lib/saga/aiLayout';
 import {
   locateSelectionInSource,
   SourceLocateTarget,
@@ -793,13 +794,21 @@ export default function DesignerApp() {
   }, [commitGraph, locale, showNotice]);
 
   const handleApplyAiLayout = useCallback(
-    (nextGraph: SagaGraph, summary: string) => {
+    (nextGraph: SagaGraph, summary: string, durationMs?: number) => {
       commitGraph(() => nextGraph);
       setLayoutFitNonce((n) => n + 1);
+      const durationSuffixZh =
+        durationMs !== undefined
+          ? `，總耗時 ${formatAiLayoutDuration(durationMs, 'zh-TW')}`
+          : '';
+      const durationSuffixEn =
+        durationMs !== undefined
+          ? `, ${formatAiLayoutDuration(durationMs, 'en')}`
+          : '';
       showNotice(
         locale === 'zh-TW'
-          ? `已套用 AI 排版（Ctrl+Z 可復原）${summary ? `：${summary.slice(0, 48)}` : ''}`
-          : `Applied AI Layout (Ctrl+Z to undo)${summary ? `: ${summary.slice(0, 60)}` : ''}`
+          ? `已套用 AI 排版（Ctrl+Z 可復原${durationSuffixZh}）${summary ? `：${summary.slice(0, 48)}` : ''}`
+          : `Applied AI Layout (Ctrl+Z to undo${durationSuffixEn})${summary ? `: ${summary.slice(0, 60)}` : ''}`
       );
     },
     [commitGraph, locale, showNotice]

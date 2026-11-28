@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
+  AI_LAYOUT_TIMEOUT_SECONDS,
+  AI_LAYOUT_UPSTREAM_TIMEOUT_MS,
   AiLayoutNodePosition,
   AiLayoutPlan,
   applyAiLayoutToGraph,
@@ -13,7 +15,7 @@ import {
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 function jsonNoStore(payload: unknown, status = 200): NextResponse {
   return NextResponse.json(payload, {
@@ -46,6 +48,7 @@ export async function GET() {
     apiKeyConfigured,
     defaultModel,
     baseUrlHost: getSafeHost(baseUrl),
+    timeoutSeconds: AI_LAYOUT_TIMEOUT_SECONDS,
   });
 }
 
@@ -142,6 +145,24 @@ function mapMiniMaxHttpError(
   );
 }
 
+function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 async function callMiniMaxWithRetry(params: {
   baseUrl: string;
   apiKey: string;
@@ -149,9 +170,21 @@ async function callMiniMaxWithRetry(params: {
   systemInstruction: string;
   userPrompt: string;
   locale: 'zh-TW' | 'en';
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }): Promise<{ content: string; resolvedModel: string }> {
-  const { baseUrl, apiKey, model, systemInstruction, userPrompt, locale } = params;
+  const {
+    baseUrl,
+    apiKey,
+    model,
+    systemInstruction,
+    userPrompt,
+    locale,
+    signal,
+    timeoutMs = AI_LAYOUT_UPSTREAM_TIMEOUT_MS,
+  } = params;
   const endpoint = `${baseUrl}/chat/completions`;
+  const deadlineAt = Date.now() + timeoutMs;
 
   // Per https://platform.minimax.io/docs/guides/text-generation:
   // OpenAI-compatible Chat Completions endpoint at https://api.minimax.io/v1/chat/completions
@@ -171,8 +204,33 @@ async function callMiniMaxWithRetry(params: {
 
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (signal?.aborted) {
+      throw new MiniMaxApiError(
+        locale === 'zh-TW' ? 'AI 排版請求已由使用者取消。' : 'AI layout request was cancelled by the user.',
+        499,
+        'REQUEST_CANCELLED'
+      );
+    }
+
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      throw new MiniMaxApiError(
+        locale === 'zh-TW'
+          ? `呼叫 MiniMax API 逾時（超過 ${AI_LAYOUT_TIMEOUT_SECONDS} 秒），請稍後再試或切換至 MiniMax-M3.1-Flash。`
+          : `MiniMax API request timed out (exceeded ${AI_LAYOUT_TIMEOUT_SECONDS}s). Please retry or switch to MiniMax-M3.1-Flash.`,
+        504,
+        'MINIMAX_TIMEOUT'
+      );
+    }
+
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 115000);
+    let didUpstreamTimeout = false;
+    const onClientAbort = () => controller.abort();
+    signal?.addEventListener('abort', onClientAbort, { once: true });
+    const timer = setTimeout(() => {
+      didUpstreamTimeout = true;
+      controller.abort();
+    }, remainingMs);
 
     try {
       const res = await fetch(endpoint, {
@@ -199,9 +257,9 @@ async function callMiniMaxWithRetry(params: {
           payload?.base_resp?.status_msg ||
           rawText.slice(0, 200);
         const mapped = mapMiniMaxHttpError(res.status, errMsg, locale);
-        if (res.status >= 500 && attempt === 0) {
+        if (res.status >= 500 && attempt === 0 && !signal?.aborted) {
           lastError = mapped;
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          await sleepWithSignal(500, signal);
           continue;
         }
         throw mapped;
@@ -239,11 +297,18 @@ async function callMiniMaxWithRetry(params: {
       }
       lastError = err;
       const isAbort = err instanceof Error && err.name === 'AbortError';
-      if (isAbort) {
+      if (signal?.aborted) {
+        throw new MiniMaxApiError(
+          locale === 'zh-TW' ? 'AI 排版請求已由使用者取消。' : 'AI layout request was cancelled by the user.',
+          499,
+          'REQUEST_CANCELLED'
+        );
+      }
+      if (isAbort || didUpstreamTimeout) {
         throw new MiniMaxApiError(
           locale === 'zh-TW'
-            ? '呼叫 MiniMax API 逾時，請稍後再試或切換至 MiniMax-M3.1-Flash。'
-            : 'MiniMax API request timed out. Please retry or switch to MiniMax-M3.1-Flash.',
+            ? `呼叫 MiniMax API 逾時（超過 ${AI_LAYOUT_TIMEOUT_SECONDS} 秒），請稍後再試或切換至 MiniMax-M3.1-Flash。`
+            : `MiniMax API request timed out (exceeded ${AI_LAYOUT_TIMEOUT_SECONDS}s). Please retry or switch to MiniMax-M3.1-Flash.`,
           504,
           'MINIMAX_TIMEOUT'
         );
@@ -257,9 +322,10 @@ async function callMiniMaxWithRetry(params: {
           'MINIMAX_NETWORK_ERROR'
         );
       }
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await sleepWithSignal(500, signal);
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onClientAbort);
     }
   }
 
@@ -267,6 +333,7 @@ async function callMiniMaxWithRetry(params: {
 }
 
 export async function POST(req: NextRequest) {
+  const requestStartedAt = Date.now();
   let body: unknown;
   try {
     body = await req.json();
@@ -324,6 +391,7 @@ export async function POST(req: NextRequest) {
       systemInstruction,
       userPrompt,
       locale,
+      signal: req.signal,
     });
 
     const parsedObj = extractAiLayoutJsonFromText(content);
@@ -433,6 +501,7 @@ export async function POST(req: NextRequest) {
       plan,
       metricsBefore,
       metricsAfter,
+      durationMs: Math.max(0, Date.now() - requestStartedAt),
     });
   } catch (err) {
     if (err instanceof MiniMaxApiError) {

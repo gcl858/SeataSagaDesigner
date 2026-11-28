@@ -1,10 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  AI_LAYOUT_TIMEOUT_MS,
+  AI_LAYOUT_TIMEOUT_SECONDS,
+  AI_LAYOUT_UPSTREAM_TIMEOUT_MS,
   applyAiLayoutToGraph,
   buildAiLayoutPrompts,
   computeLayoutMetrics,
   extractAiLayoutJsonFromText,
+  formatAiLayoutDuration,
+  formatLiveElapsedTimer,
   resolveMiniMaxBaseUrl,
   resolveMiniMaxModel,
   resolveNodeOverlaps,
@@ -249,3 +254,29 @@ test('applyAiLayoutToGraph fixes unaligned spine, tight Choice gap, and bottom-r
   assert.equal(metrics.edgeCrossings, 0);
   assert.equal(metrics.nodeThroughEdgeHits, 0);
 });
+
+test('AI layout timeout ceiling is configured to 300 seconds with upstream headroom', () => {
+  assert.equal(AI_LAYOUT_TIMEOUT_SECONDS, 300);
+  assert.equal(AI_LAYOUT_TIMEOUT_MS, 300_000);
+  assert.ok(AI_LAYOUT_UPSTREAM_TIMEOUT_MS >= 290_000);
+  assert.ok(AI_LAYOUT_UPSTREAM_TIMEOUT_MS < AI_LAYOUT_TIMEOUT_MS);
+});
+
+test('formatAiLayoutDuration and formatLiveElapsedTimer format elapsed durations accurately', () => {
+  assert.equal(formatAiLayoutDuration(0, 'zh-TW'), '0.0 秒');
+  assert.equal(formatAiLayoutDuration(-150, 'en'), '0.0s');
+  assert.equal(formatAiLayoutDuration(350, 'zh-TW'), '0.4 秒');
+  assert.equal(formatAiLayoutDuration(4230, 'zh-TW'), '4.2 秒');
+  assert.equal(formatAiLayoutDuration(4230, 'en'), '4.2s');
+  assert.equal(formatAiLayoutDuration(59_960, 'zh-TW'), '1 分 0.0 秒');
+  assert.equal(formatAiLayoutDuration(60_000, 'zh-TW'), '1 分 0.0 秒');
+  assert.equal(formatAiLayoutDuration(125_400, 'zh-TW'), '2 分 5.4 秒');
+  assert.equal(formatAiLayoutDuration(125_400, 'en'), '2m 5.4s');
+
+  assert.equal(formatLiveElapsedTimer(0), '00:00');
+  assert.equal(formatLiveElapsedTimer(-10), '00:00');
+  assert.equal(formatLiveElapsedTimer(12_900), '00:12');
+  assert.equal(formatLiveElapsedTimer(75_000), '01:15');
+  assert.equal(formatLiveElapsedTimer(300_000), '05:00');
+});
+

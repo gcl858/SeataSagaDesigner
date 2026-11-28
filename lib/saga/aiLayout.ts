@@ -40,6 +40,47 @@ export interface LayoutQualityMetrics {
 }
 
 export const DEFAULT_MINIMAX_MODEL = 'MiniMax-M3.1-Flash';
+export const AI_LAYOUT_TIMEOUT_SECONDS = 300;
+export const AI_LAYOUT_TIMEOUT_MS = AI_LAYOUT_TIMEOUT_SECONDS * 1000;
+export const AI_LAYOUT_UPSTREAM_TIMEOUT_MS = 295_000;
+
+/**
+ * Formats an AI layout elapsed duration in milliseconds into a concise,
+ * human-readable string localized for zh-TW or en.
+ */
+export function formatAiLayoutDuration(
+  durationMs: number,
+  locale: Locale
+): string {
+  const safeMs =
+    typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0
+      ? durationMs
+      : 0;
+  const totalTenths = Math.round(safeMs / 100);
+  if (totalTenths < 600) {
+    const secStr = (totalTenths / 10).toFixed(1);
+    return locale === 'zh-TW' ? `${secStr} 秒` : `${secStr}s`;
+  }
+  const minutes = Math.floor(totalTenths / 600);
+  const remTenths = totalTenths - minutes * 600;
+  const remSeconds = (remTenths / 10).toFixed(1);
+  return locale === 'zh-TW'
+    ? `${minutes} 分 ${remSeconds} 秒`
+    : `${minutes}m ${remSeconds}s`;
+}
+
+/**
+ * Formats live elapsed milliseconds into mm:ss for the in-progress timer.
+ */
+export function formatLiveElapsedTimer(elapsedMs: number): string {
+  const safeSec =
+    typeof elapsedMs === 'number' && Number.isFinite(elapsedMs) && elapsedMs > 0
+      ? Math.floor(elapsedMs / 1000)
+      : 0;
+  const minutes = Math.floor(safeSec / 60);
+  const seconds = safeSec % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
 
 export interface MiniMaxModelOption {
   id: string;
@@ -94,6 +135,7 @@ export interface AiLayoutResponsePayload {
   plan: AiLayoutPlan;
   metricsBefore: LayoutQualityMetrics;
   metricsAfter: LayoutQualityMetrics;
+  durationMs?: number;
 }
 
 export interface AiLayoutStyleOption {
