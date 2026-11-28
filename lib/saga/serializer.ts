@@ -7,6 +7,8 @@ import {
   SeataStateMachineJson,
   SeataStateType,
 } from './types';
+import { computeGraphEdgeRoutes, estimateEdgeLabelSize } from './edgeRouting';
+import { refineGraphLayout } from './aiLayout';
 
 export const START_NODE_ID = '__START__';
 
@@ -400,11 +402,12 @@ export function autoLayoutGraph(graph: SagaGraph): SagaGraph {
   const startNode = graph.nodes.find((n) => n.type === 'StartState');
   const forwardAdjacency = new Map<string, string[]>();
   const compensationTargets = new Map<string, string>();
+  const nodeById = new Map<string, SagaNode>(graph.nodes.map((n) => [n.id, n]));
 
   graph.edges.forEach((e) => {
     if (e.type === 'Compensation') {
       compensationTargets.set(e.source, e.target);
-    } else {
+    } else if (e.type !== 'Catch') {
       const list = forwardAdjacency.get(e.source) ?? [];
       list.push(e.target);
       forwardAdjacency.set(e.source, list);
@@ -412,6 +415,12 @@ export function autoLayoutGraph(graph: SagaGraph): SagaGraph {
   });
 
   const compTargetSet = new Set(compensationTargets.values());
+  const exceptionTerminalSet = new Set(
+    graph.nodes
+      .filter((n) => n.type === 'CompensationTrigger' || n.type === 'Fail')
+      .map((n) => n.id)
+  );
+
   const levelMap = new Map<string, number>();
   const queue: string[] = [];
 
@@ -425,7 +434,11 @@ export function autoLayoutGraph(graph: SagaGraph): SagaGraph {
     const currentLevel = levelMap.get(current) ?? 0;
     const neighbors = forwardAdjacency.get(current) ?? [];
     for (const next of neighbors) {
-      if (!compTargetSet.has(next) && !levelMap.has(next)) {
+      if (
+        !compTargetSet.has(next) &&
+        !exceptionTerminalSet.has(next) &&
+        !levelMap.has(next)
+      ) {
         levelMap.set(next, currentLevel + 1);
         queue.push(next);
       }
@@ -437,9 +450,13 @@ export function autoLayoutGraph(graph: SagaGraph): SagaGraph {
     if (lvl > maxLevel) maxLevel = lvl;
   });
 
-  // Assign levels to unvisited non-compensation nodes
+  // Assign levels to unvisited non-compensation, non-exception nodes
   graph.nodes.forEach((node) => {
-    if (!levelMap.has(node.id) && !compTargetSet.has(node.id)) {
+    if (
+      !levelMap.has(node.id) &&
+      !compTargetSet.has(node.id) &&
+      !exceptionTerminalSet.has(node.id)
+    ) {
       maxLevel += 1;
       levelMap.set(node.id, maxLevel);
     }
@@ -447,7 +464,7 @@ export function autoLayoutGraph(graph: SagaGraph): SagaGraph {
 
   const columns = new Map<number, SagaNode[]>();
   graph.nodes.forEach((node) => {
-    if (compTargetSet.has(node.id)) return;
+    if (compTargetSet.has(node.id) || exceptionTerminalSet.has(node.id)) return;
     const lvl = levelMap.get(node.id) ?? 0;
     const col = columns.get(lvl) ?? [];
     col.push(node);
@@ -455,43 +472,75 @@ export function autoLayoutGraph(graph: SagaGraph): SagaGraph {
   });
 
   const positions = new Map<string, { x: number; y: number }>();
-  const colSpacing = 228;
+  const colSpacing = 248;
   const rowSpacing = 148;
-  const baseX = 64;
-  const baseY = 160;
+  const baseX = 72;
+  const spineCenterY = 148;
 
   columns.forEach((colNodes, lvl) => {
     const totalHeight = (colNodes.length - 1) * rowSpacing;
     colNodes.forEach((node, idx) => {
-      const x = baseX + lvl * colSpacing;
-      const y = baseY - totalHeight / 2 + idx * rowSpacing + (74 - node.height) / 2;
+      const centerX = baseX + lvl * colSpacing + (lvl === 0 ? 24 : 86);
+      const centerY = spineCenterY - totalHeight / 2 + idx * rowSpacing;
       positions.set(node.id, {
-        x: Math.max(40, Math.round(x / 20) * 20),
-        y: Math.max(60, Math.round(y / 20) * 20),
+        x: Math.max(40, Math.round(centerX - node.width / 2)),
+        y: Math.max(60, Math.round(centerY - node.height / 2)),
       });
     });
   });
 
-  // Place compensation tasks directly below their source task
+  // Place compensation tasks plumb-aligned directly below their paired forward task
   compensationTargets.forEach((compTargetId, sourceId) => {
+    const srcNode = nodeById.get(sourceId);
+    const compNode = nodeById.get(compTargetId);
     const srcPos = positions.get(sourceId);
-    if (srcPos) {
+    if (srcPos && srcNode && compNode) {
+      const srcCx = srcPos.x + srcNode.width / 2;
       positions.set(compTargetId, {
-        x: srcPos.x,
-        y: srcPos.y + 150,
+        x: Math.round(srcCx - compNode.width / 2),
+        y: srcPos.y + srcNode.height + 112,
       });
     } else {
-      positions.set(compTargetId, { x: 240, y: 340 });
+      positions.set(compTargetId, { x: 240, y: 310 });
     }
   });
 
-  return {
+  // Place exception/rollback terminals (CompensationTrigger, Fail) cleanly in the
+  // central/bottom exception corridor near their incoming sources
+  const exceptionNodes = graph.nodes.filter((n) => exceptionTerminalSet.has(n.id));
+  exceptionNodes.forEach((node, idx) => {
+    const incomingSources = graph.edges
+      .filter((e) => e.target === node.id)
+      .map((e) => {
+        const p = positions.get(e.source);
+        const s = nodeById.get(e.source);
+        return p && s ? p.x + s.width / 2 : null;
+      })
+      .filter((v): v is number => v !== null);
+    const avgCx =
+      incomingSources.length > 0
+        ? incomingSources.reduce((a, b) => a + b, 0) / incomingSources.length
+        : baseX + (idx + 2) * colSpacing;
+    const laneCenterY =
+      node.type === 'Fail' &&
+      graph.edges.some((e) => e.target === node.id && e.type === 'Default')
+        ? spineCenterY + 178
+        : spineCenterY + 324;
+    positions.set(node.id, {
+      x: Math.max(60, Math.round(avgCx - node.width / 2)),
+      y: Math.round(laneCenterY - node.height / 2),
+    });
+  });
+
+  const prelimGraph: SagaGraph = {
     ...graph,
     nodes: graph.nodes.map((node) => {
       const pos = positions.get(node.id);
       return pos ? { ...node, x: pos.x, y: pos.y } : node;
     }),
   };
+
+  return refineGraphLayout(prelimGraph, 'horizontal-swimlane');
 }
 
 function escapeXml(str: string): string {
@@ -513,17 +562,12 @@ export function exportGraphToSvg(graph: SagaGraph): string {
   const width = Math.max(600, maxX - minX);
   const height = Math.max(360, maxY - minY);
 
-  const nodeMap = new Map(graph.nodes.map((n) => [n.id, n]));
+  const routedEdges = computeGraphEdgeRoutes(graph.nodes, graph.edges);
 
   const edgesSvg = graph.edges
     .map((e) => {
-      const src = nodeMap.get(e.source);
-      const tgt = nodeMap.get(e.target);
-      if (!src || !tgt) return '';
-      const sx = src.x + src.width / 2;
-      const sy = src.y + src.height / 2;
-      const tx = tgt.x + tgt.width / 2;
-      const ty = tgt.y + tgt.height / 2;
+      const route = routedEdges.get(e.id);
+      if (!route) return '';
       const stroke =
         e.type === 'Compensation'
           ? '#4F46E5'
@@ -536,23 +580,28 @@ export function exportGraphToSvg(graph: SagaGraph): string {
           : e.type === 'Catch'
             ? ' stroke-dasharray="4,3"'
             : '';
-      const label =
-        e.type === 'Choice'
-          ? e.expression || ''
-          : e.type === 'Default'
-            ? 'Default'
-            : e.type === 'Catch'
-              ? (e.exceptions?.[0] || 'Throwable').split('.').pop() || 'Catch'
-              : e.type === 'Compensation'
-                ? 'Compensate'
-                : '';
-      const mx = (sx + tx) / 2;
-      const my = (sy + ty) / 2 - 8;
-      return `<line x1="${sx}" y1="${sy}" x2="${tx}" y2="${ty}" stroke="${stroke}" stroke-width="2"${dash} marker-end="url(#arrow)" />${
-        label
-          ? `<text x="${mx}" y="${my}" font-family="sans-serif" font-size="11" fill="${stroke}" text-anchor="middle">${escapeXml(label)}</text>`
-          : ''
-      }`;
+      return `<path d="${route.path}" fill="none" stroke="${stroke}" stroke-width="2"${dash} marker-end="url(#arrow)" />`;
+    })
+    .join('\n  ');
+
+  const edgeLabelsSvg = graph.edges
+    .map((e) => {
+      const route = routedEdges.get(e.id);
+      if (!route || !route.labelText) return '';
+      const display =
+        route.labelText.length > 34
+          ? `${route.labelText.slice(0, 33)}…`
+          : route.labelText;
+      const { width: lw, height: lh } = estimateEdgeLabelSize(display);
+      const stroke =
+        e.type === 'Compensation'
+          ? '#4F46E5'
+          : e.type === 'Catch'
+            ? '#B45309'
+            : '#334155';
+      const rx = Math.round(route.labelPos.x - lw / 2);
+      const ry = Math.round(route.labelPos.y - lh / 2);
+      return `<g><rect x="${rx}" y="${ry}" width="${lw}" height="${lh}" rx="4" fill="#FFFFFF" fill-opacity="0.95" stroke="#CBD5E1" stroke-width="1" /><text x="${route.labelPos.x}" y="${route.labelPos.y + 4}" font-family="ui-monospace, monospace" font-size="10.5" font-weight="500" fill="${stroke}" text-anchor="middle">${escapeXml(display)}</text></g>`;
     })
     .join('\n  ');
 
@@ -573,7 +622,7 @@ export function exportGraphToSvg(graph: SagaGraph): string {
       }
       if (n.type === 'Choice') {
         const pts = `${cx},${n.y} ${n.x + n.width},${cy} ${cx},${n.y + n.height} ${n.x},${cy}`;
-        return `<g><polygon points="${pts}" fill="#FFFBEB" stroke="#D97706" stroke-width="2" /><text x="${cx}" y="${cy + 4}" font-family="sans-serif" font-size="11" font-weight="600" fill="#92400E" text-anchor="middle">${escapeXml(n.name)}</text></g>`;
+        return `<g><polygon points="${pts}" fill="#FFFBEB" stroke="#D97706" stroke-width="2" /><text x="${cx}" y="${n.y + n.height + 16}" font-family="sans-serif" font-size="11" font-weight="600" fill="#92400E" text-anchor="middle">${escapeXml(n.name)}</text></g>`;
       }
       const stroke = n.isForCompensation ? '#4F46E5' : '#2563EB';
       const fill = n.isForCompensation ? '#EEF2FF' : '#FFFFFF';
@@ -595,5 +644,6 @@ export function exportGraphToSvg(graph: SagaGraph): string {
   </defs>
   ${edgesSvg}
   ${nodesSvg}
+  ${edgeLabelsSvg}
 </svg>`;
 }

@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { AlertTriangle, ChevronLeft, ChevronRight, Layers, X } from 'lucide-react';
 import {
   MockOutcome,
   NODE_DIMENSIONS,
@@ -44,6 +44,12 @@ import {
   updateActiveGraphTransient,
 } from '@/lib/saga/subMachines';
 import { validateSagaGraph } from '@/lib/saga/validator';
+import {
+  applyImportedBundleToWorkspace,
+  ImportedBundleResult,
+  ImportedSourceFile,
+  parseSeataImportBundle,
+} from '@/lib/saga/batchImport';
 import { runSagaSimulation } from '@/lib/saga/simulator';
 import { Locale, UI_COPY } from '@/lib/saga/i18n';
 import {
@@ -65,6 +71,7 @@ import JsonEditorPanel, { SourceFormat } from './JsonEditorPanel';
 import SimulationPanel from './SimulationPanel';
 import ValidationDrawer from './ValidationDrawer';
 import VsCodeExtensionModal from './VsCodeExtensionModal';
+import AiLayoutModal from './AiLayoutModal';
 
 function generateUniqueStateName(
   nodes: SagaNode[],
@@ -196,6 +203,10 @@ export default function DesignerApp() {
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [vscodeModalOpen, setVscodeModalOpen] = useState<boolean>(false);
+  const [aiLayoutOpen, setAiLayoutOpen] = useState<boolean>(false);
+  const [layoutFitNonce, setLayoutFitNonce] = useState<number>(0);
+  const [importedBundleSummary, setImportedBundleSummary] =
+    useState<ImportedBundleResult | null>(null);
   const [embeddedFile, setEmbeddedFile] = useState<{
     uri: string;
     fileName: string;
@@ -505,6 +516,7 @@ export default function DesignerApp() {
     setSimOverrides({});
     setSimResult(null);
     setActiveSimStepIdx(null);
+    setImportedBundleSummary(null);
   };
 
   const handleAddNode = useCallback(
@@ -774,10 +786,24 @@ export default function DesignerApp() {
 
   const handleAutoLayout = useCallback(() => {
     commitGraph((prev) => autoLayoutGraph(prev));
+    setLayoutFitNonce((n) => n + 1);
     showNotice(
       locale === 'zh-TW' ? '已完成自動拓樸排版。' : 'Applied automatic layout.'
     );
   }, [commitGraph, locale, showNotice]);
+
+  const handleApplyAiLayout = useCallback(
+    (nextGraph: SagaGraph, summary: string) => {
+      commitGraph(() => nextGraph);
+      setLayoutFitNonce((n) => n + 1);
+      showNotice(
+        locale === 'zh-TW'
+          ? `已套用 AI 排版（Ctrl+Z 可復原）${summary ? `：${summary.slice(0, 48)}` : ''}`
+          : `Applied AI Layout (Ctrl+Z to undo)${summary ? `: ${summary.slice(0, 60)}` : ''}`
+      );
+    },
+    [commitGraph, locale, showNotice]
+  );
 
   const handleApplySource = useCallback(
     (
@@ -815,24 +841,71 @@ export default function DesignerApp() {
     [commitGraph, locale, showNotice]
   );
 
-  const handleImportFile = useCallback(
-    (text: string, filename: string) => {
-      const lower = filename.toLowerCase();
-      const hint: SourceFormat | undefined =
-        lower.endsWith('.yaml') || lower.endsWith('.yml')
-          ? 'yaml'
-          : lower.endsWith('.json')
-            ? 'json'
-            : undefined;
-      const res = handleApplySource(text, hint);
-      if (res.ok && res.detectedFormat) {
-        setSourceFormat(res.detectedFormat);
-      } else if (!res.ok) {
-        showNotice(`Import failed: ${res.error}`);
+  const handleImportFiles = useCallback(
+    (files: ImportedSourceFile[]) => {
+      if (files.length === 0) return;
+
+      const bundle = parseSeataImportBundle(files, availableMachineNames);
+      if (bundle.machines.length === 0 || !bundle.rootMachineName) {
+        const firstErr = bundle.errors[0];
+        showNotice(
+          locale === 'zh-TW'
+            ? `匯入失敗${firstErr ? `（${firstErr.filename}）：${firstErr.error}` : '：未找到有效的 Seata 狀態機定義。'}`
+            : `Import failed${firstErr ? ` (${firstErr.filename}): ${firstErr.error}` : ': No valid Seata state machine found.'}`
+        );
+        return;
+      }
+
+      setWorkspace((prev) => applyImportedBundleToWorkspace(prev, bundle));
+      setSelectedNodeId(null);
+      setSelectedEdgeId(null);
+      setSelectedTemplateId('custom');
+      setSourceFormat(bundle.primaryFormat);
+      setLayoutFitNonce((n) => n + 1);
+      setSimResult(null);
+      setActiveSimStepIdx(null);
+
+      if (
+        bundle.machines.length >= 2 ||
+        bundle.errors.length > 0 ||
+        bundle.missingReferences.length > 0
+      ) {
+        setImportedBundleSummary(bundle);
+      } else {
+        setImportedBundleSummary(null);
+      }
+
+      if (bundle.machines.length === 1) {
+        const only = bundle.machines[0];
+        showNotice(
+          locale === 'zh-TW'
+            ? `已匯入 ${only.graph.meta.name}（${only.detectedFormat.toUpperCase()}）${bundle.errors.length > 0 ? `，另有 ${bundle.errors.length} 個檔案解析失敗` : ''}。`
+            : `Imported ${only.graph.meta.name} (${only.detectedFormat.toUpperCase()})${bundle.errors.length > 0 ? ` (${bundle.errors.length} file error(s))` : ''}.`
+        );
+      } else {
+        const childCount = bundle.linkedChildNames.length;
+        showNotice(
+          locale === 'zh-TW'
+            ? `已一次匯入 ${bundle.machines.length} 個狀態機（父流程：${bundle.rootMachineName}${childCount > 0 ? `，已自動連結 ${childCount} 個子流程` : ''}）${bundle.errors.length > 0 ? `；${bundle.errors.length} 個檔案解析失敗` : ''}。`
+            : `Imported ${bundle.machines.length} state machines (Parent: ${bundle.rootMachineName}${childCount > 0 ? `, linked ${childCount} sub-machine(s)` : ''})${bundle.errors.length > 0 ? `; ${bundle.errors.length} file error(s)` : ''}.`
+        );
       }
     },
-    [handleApplySource, showNotice]
+    [availableMachineNames, locale, showNotice]
   );
+
+  const handleSelectImportedMachine = useCallback((machineName: string) => {
+    setWorkspace((prev) => {
+      if (!prev.registry[machineName]) return prev;
+      return {
+        ...prev,
+        navStack: [{ machineName }],
+      };
+    });
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setLayoutFitNonce((n) => n + 1);
+  }, []);
 
   const handleExportJson = useCallback(() => {
     const filename = `${graph.meta.name || 'seata-saga-statemachine'}.json`;
@@ -1128,7 +1201,8 @@ export default function DesignerApp() {
         onUndo={handleUndo}
         onRedo={handleRedo}
         onAutoLayout={handleAutoLayout}
-        onImportFile={handleImportFile}
+        onOpenAiLayout={() => setAiLayoutOpen(true)}
+        onImportFiles={handleImportFiles}
         onExportYaml={handleExportYaml}
         onExportSvg={handleExportSvg}
         errorCount={errorCount}
@@ -1152,6 +1226,103 @@ export default function DesignerApp() {
         onReturnToParent={handleReturnToParent}
       />
 
+      {importedBundleSummary && (
+        <div
+          data-testid="imported-bundle-bar"
+          className="px-3 py-1.5 bg-sky-50/90 dark:bg-sky-950/40 border-b border-sky-200 dark:border-sky-900/70 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0"
+        >
+          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+            <span className="inline-flex items-center gap-1.5 font-medium text-sky-900 dark:text-sky-200 shrink-0">
+              <Layers className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+              <span>
+                {locale === 'zh-TW'
+                  ? `多檔父子匯入（${importedBundleSummary.machines.length} 個狀態機）：`
+                  : `Imported Bundle (${importedBundleSummary.machines.length} machines):`}
+              </span>
+            </span>
+
+            {importedBundleSummary.machines.map((entry) => {
+              const name = entry.graph.meta.name;
+              const isRoot = name === importedBundleSummary.rootMachineName;
+              const isChild = importedBundleSummary.linkedChildNames.includes(name);
+              const isActive = activeMachineName === name;
+              return (
+                <button
+                  key={name}
+                  type="button"
+                  data-testid={`imported-machine-${name}`}
+                  onClick={() => handleSelectImportedMachine(name)}
+                  title={`${entry.filename} (${entry.detectedFormat.toUpperCase()})`}
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border font-mono text-[11px] transition-colors cursor-pointer ${
+                    isActive
+                      ? 'bg-sky-600 text-white border-sky-600 font-semibold'
+                      : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-sky-200 dark:border-sky-800 hover:border-sky-400'
+                  }`}
+                >
+                  <span className="font-sans text-[10px] opacity-85">
+                    {isRoot
+                      ? locale === 'zh-TW'
+                        ? '父'
+                        : 'Root'
+                      : isChild
+                        ? locale === 'zh-TW'
+                          ? '子'
+                          : 'Sub'
+                        : locale === 'zh-TW'
+                          ? '獨立'
+                          : 'Flow'}
+                  </span>
+                  <span>{name}</span>
+                </button>
+              );
+            })}
+
+            {(importedBundleSummary.errors.length > 0 ||
+              importedBundleSummary.missingReferences.length > 0) && (
+              <span
+                title={[
+                  ...importedBundleSummary.errors.map(
+                    (e) => `${e.filename}: ${e.error}`
+                  ),
+                  ...importedBundleSummary.missingReferences.map(
+                    (r) =>
+                      `${r.parentMachine}.${r.stateName} -> missing "${r.missingSubMachine}"`
+                  ),
+                ].join('\n')}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100/90 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-[11px]"
+              >
+                <AlertTriangle className="w-3 h-3 shrink-0" />
+                <span>
+                  {importedBundleSummary.errors.length > 0
+                    ? locale === 'zh-TW'
+                      ? `${importedBundleSummary.errors.length} 檔失敗`
+                      : `${importedBundleSummary.errors.length} failed`
+                    : ''}
+                  {importedBundleSummary.errors.length > 0 &&
+                  importedBundleSummary.missingReferences.length > 0
+                    ? ' · '
+                    : ''}
+                  {importedBundleSummary.missingReferences.length > 0
+                    ? locale === 'zh-TW'
+                      ? `${importedBundleSummary.missingReferences.length} 未找到子流程`
+                      : `${importedBundleSummary.missingReferences.length} unresolved sub-flow`
+                    : ''}
+                </span>
+              </span>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setImportedBundleSummary(null)}
+            aria-label={locale === 'zh-TW' ? '關閉匯入摘要' : 'Dismiss import summary'}
+            className="p-1 rounded hover:bg-sky-200/70 dark:hover:bg-sky-900/60 text-sky-700 dark:text-sky-300 cursor-pointer shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Main Workspace Area */}
       <main className="flex-1 flex min-h-0 overflow-hidden relative">
         {/* Left Element Palette (visible in canvas, split, simulate) */}
@@ -1171,7 +1342,7 @@ export default function DesignerApp() {
           <div className="flex-1 flex flex-col min-w-0 min-h-0">
             <SagaCanvas
               graph={graph}
-              activeMachineKey={`${workspace.navStack.length}:${activeMachineName}`}
+              activeMachineKey={`${workspace.navStack.length}:${activeMachineName}:${layoutFitNonce}`}
               availableMachineNames={availableMachineNames}
               selectedNodeId={selectedNodeId}
               selectedEdgeId={selectedEdgeId}
@@ -1367,6 +1538,18 @@ export default function DesignerApp() {
         open={vscodeModalOpen}
         onClose={() => setVscodeModalOpen(false)}
         locale={locale}
+      />
+
+      <AiLayoutModal
+        open={aiLayoutOpen}
+        onClose={() => setAiLayoutOpen(false)}
+        graph={graph}
+        locale={locale}
+        onApplyLayout={handleApplyAiLayout}
+        onRunBasicAutoLayout={() => {
+          handleAutoLayout();
+          setAiLayoutOpen(false);
+        }}
       />
     </div>
   );

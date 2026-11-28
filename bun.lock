@@ -5,7 +5,7 @@
     "": {
       "name": "ai-studio-applet",
       "dependencies": {
-        "@google/genai": "^2.4.0",
+        "@google/genai": "^3.6.1",
         "@hookform/resolvers": "^5.2.1",
         "@types/js-yaml": "^4.0.9",
         "autoprefixer": "^10.4.21",
@@ -117,7 +117,7 @@
 
     "@google-cloud/sql": ["@google-cloud/sql@0.32.0", "", { "dependencies": { "google-gax": "^6.0.0" } }, "sha512-s60hH8oXRPc2FMNVfCUEfO8FqlY3cKbbNpmlKuoIVAeMxWbKV0ngncvU5f/A8xLTQoKHkvk3pa5pvcB7nh/qCQ=="],
 
-    "@google/genai": ["@google/genai@2.32.0", "", { "dependencies": { "google-auth-library": "^10.3.0", "p-retry": "^4.6.2", "protobufjs": "^7.5.4", "ws": "^8.18.0" }, "peerDependencies": { "@modelcontextprotocol/sdk": "^1.25.2" }, "optionalPeers": ["@modelcontextprotocol/sdk"], "hasInstallScript": true }, "sha512-60c79uXpR0a47bmGqDxbXEBuQUalNmwo5mx5kqb91jIW4FoqpsLSt86DeVhRhtH5+s/16Wqxt3sXzFQn2U1OHQ=="],
+    "@google/genai": ["@google/genai@3.6.1", "", { "dependencies": { "google-auth-library": "^10.3.0", "p-retry": "^4.6.2", "protobufjs": "^7.6.5", "ws": "^8.21.0" }, "peerDependencies": { "@modelcontextprotocol/sdk": "^1.25.2" }, "optionalPeers": ["@modelcontextprotocol/sdk"] }, "sha512-DQIkZkl+VoZc+RUSaJ41vRuywjQDpP0t/oUf5/ddQhNW6JsPjVULW2EgHmuJ1mrr6ACtrmUdPlqtNXF1yfKySg=="],
 
     "@googleapis/sqladmin": ["@googleapis/sqladmin@43.0.0", "", { "dependencies": { "googleapis-common": "^9.0.0" } }, "sha512-Mq9HGbtyy28i3jclsSrjEG/TT1YOii1RfhcR/Lhombq2s49ZCJgCsD2VbZiNiVBzfH4+0XPLpN8DIlMt6dPbng=="],
 

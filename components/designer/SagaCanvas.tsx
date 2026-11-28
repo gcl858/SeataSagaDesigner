@@ -22,7 +22,7 @@ import {
   FolderOpen,
 } from 'lucide-react';
 import {
-  SagaEdge,
+  Point,
   SagaGraph,
   SagaNode,
   SeataEdgeType,
@@ -30,6 +30,7 @@ import {
   SimulationResult,
   ValidationIssue,
 } from '@/lib/saga/types';
+import { computeGraphEdgeRoutes, getNodeCenter } from '@/lib/saga/edgeRouting';
 import { InteractionMode } from './ElementPalette';
 import { Locale, UI_COPY } from '@/lib/saga/i18n';
 
@@ -53,104 +54,6 @@ interface SagaCanvasProps {
   activeMachineKey?: string;
   availableMachineNames?: ReadonlySet<string>;
   onOpenSubStateMachine?: (nodeId: string) => void;
-}
-
-interface Point {
-  x: number;
-  y: number;
-}
-
-function getNodeCenter(node: SagaNode): Point {
-  return { x: node.x + node.width / 2, y: node.y + node.height / 2 };
-}
-
-function getBoundaryPoint(node: SagaNode, toward: Point): Point {
-  const cx = node.x + node.width / 2;
-  const cy = node.y + node.height / 2;
-  const dx = toward.x - cx;
-  const dy = toward.y - cy;
-
-  if (dx === 0 && dy === 0) return { x: cx, y: cy };
-
-  if (
-    node.type === 'StartState' ||
-    node.type === 'Succeed' ||
-    node.type === 'Fail' ||
-    node.type === 'CompensationTrigger'
-  ) {
-    const r = Math.min(node.width, node.height) / 2 + 2;
-    const len = Math.hypot(dx, dy);
-    return { x: cx + (dx / len) * r, y: cy + (dy / len) * r };
-  }
-
-  if (node.type === 'Choice') {
-    const rx = node.width / 2 + 2;
-    const ry = node.height / 2 + 2;
-    const scale = 1 / (Math.abs(dx) / rx + Math.abs(dy) / ry);
-    return { x: cx + dx * scale, y: cy + dy * scale };
-  }
-
-  const hw = node.width / 2 + 2;
-  const hh = node.height / 2 + 2;
-  const sx = dx !== 0 ? hw / Math.abs(dx) : Infinity;
-  const sy = dy !== 0 ? hh / Math.abs(dy) : Infinity;
-  const scale = Math.min(sx, sy);
-  return { x: cx + dx * scale, y: cy + dy * scale };
-}
-
-function buildEdgePath(
-  source: SagaNode,
-  target: SagaNode,
-  edge: SagaEdge,
-  siblingIndex: number,
-  siblingTotal: number
-): { path: string; labelPos: Point; start: Point; end: Point } {
-  const srcCenter = getNodeCenter(source);
-  const tgtCenter = getNodeCenter(target);
-
-  // Offset Catch edges slightly from bottom-right of source task
-  let start: Point;
-  if (edge.type === 'Catch') {
-    start = { x: source.x + source.width * 0.72, y: source.y + source.height + 2 };
-  } else if (edge.type === 'Compensation') {
-    start = { x: source.x + source.width * 0.5, y: source.y + source.height + 2 };
-  } else {
-    start = getBoundaryPoint(source, tgtCenter);
-  }
-
-  const end = getBoundaryPoint(target, start);
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const dist = Math.hypot(dx, dy) || 1;
-
-  // Compute gentle curve offset for parallel edges or Catch/Compensation clarity
-  let curveOffset = 0;
-  if (siblingTotal > 1) {
-    curveOffset = (siblingIndex - (siblingTotal - 1) / 2) * 34;
-  } else if (edge.type === 'Catch') {
-    curveOffset = 22;
-  }
-
-  const nx = -dy / dist;
-  const ny = dx / dist;
-  const midX = (start.x + end.x) / 2 + nx * curveOffset;
-  const midY = (start.y + end.y) / 2 + ny * curveOffset;
-
-  const path =
-    Math.abs(curveOffset) < 1
-      ? `M ${start.x} ${start.y} L ${end.x} ${end.y}`
-      : `M ${start.x} ${start.y} Q ${midX} ${midY} ${end.x} ${end.y}`;
-
-  const labelPos = {
-    x: 0.25 * start.x + 0.5 * midX + 0.25 * end.x,
-    y:
-      0.25 * start.y +
-      0.5 * midY +
-      0.25 * end.y -
-      (edge.type === 'Choice' ? 18 : 10),
-  };
-
-  return { path, labelPos, start, end };
 }
 
 export default function SagaCanvas({
@@ -462,18 +365,22 @@ export default function SagaCanvas({
     });
   };
 
-  // Group parallel edges between same node pairs for curved separation
-  const siblingGroups = useMemo(() => {
-    const counts = new Map<string, number>();
-    const indices = new Map<string, number>();
-    graph.edges.forEach((e) => {
-      const key = [e.source, e.target].sort().join('::');
-      const idx = counts.get(key) ?? 0;
-      indices.set(e.id, idx);
-      counts.set(key, idx + 1);
+  // Obstacle-aware edge paths and collision-free edge label coordinates
+  const routedEdges = useMemo(
+    () => computeGraphEdgeRoutes(graph.nodes, graph.edges),
+    [graph.nodes, graph.edges]
+  );
+
+  // Align each node's Catch boundary icon with the actual Catch wire anchor side
+  const nodeCatchSide = useMemo(() => {
+    const map = new Map<string, 'left' | 'right' | 'center'>();
+    routedEdges.forEach((route) => {
+      if (route.edge.type === 'Catch' && route.catchAnchorSide) {
+        map.set(route.edge.source, route.catchAnchorSide);
+      }
     });
-    return { counts, indices };
-  }, [graph.edges]);
+    return map;
+  }, [routedEdges]);
 
   const selectedNode = selectedNodeId ? nodeMap.get(selectedNodeId) ?? null : null;
 
@@ -627,21 +534,9 @@ export default function SagaCanvas({
           </defs>
 
           {graph.edges.map((edge) => {
-            const src = nodeMap.get(edge.source);
-            const tgt = nodeMap.get(edge.target);
-            if (!src || !tgt) return null;
-
-            const pairKey = [edge.source, edge.target].sort().join('::');
-            const total = siblingGroups.counts.get(pairKey) ?? 1;
-            const idx = siblingGroups.indices.get(edge.id) ?? 0;
-
-            const { path, start } = buildEdgePath(
-              src,
-              tgt,
-              edge,
-              idx,
-              total
-            );
+            const route = routedEdges.get(edge.id);
+            if (!route) return null;
+            const { path, start } = route;
 
             const isSelected = selectedEdgeId === edge.id;
             const isSimVisited = simHighlights.visitedEdges.has(edge.id);
@@ -926,7 +821,13 @@ export default function SagaCanvas({
               {hasCatch && (
                 <div
                   title="Exception Catch Boundary"
-                  className="absolute -bottom-2.5 right-4 w-5 h-5 rounded-full bg-amber-50 dark:bg-amber-950 border-2 border-amber-600 dark:border-amber-400 flex items-center justify-center pointer-events-none"
+                  className={`absolute -bottom-2.5 w-5 h-5 rounded-full bg-amber-50 dark:bg-amber-950 border-2 border-amber-600 dark:border-amber-400 flex items-center justify-center pointer-events-none ${
+                    nodeCatchSide.get(node.id) === 'left'
+                      ? 'left-4'
+                      : nodeCatchSide.get(node.id) === 'center'
+                        ? 'left-1/2 -translate-x-1/2'
+                        : 'right-4'
+                  }`}
                 >
                   <AlertOctagon className="w-3 h-3 text-amber-600 dark:text-amber-400" />
                 </div>
@@ -966,29 +867,12 @@ export default function SagaCanvas({
           );
         })}
 
-        {/* Top Edge Label Overlay Layer (always readable above nodes) */}
+        {/* Top Edge Label Overlay Layer (always readable, collision-free above nodes) */}
         <div className="absolute inset-0 pointer-events-none z-10">
           {graph.edges.map((edge) => {
-            const src = nodeMap.get(edge.source);
-            const tgt = nodeMap.get(edge.target);
-            if (!src || !tgt) return null;
-
-            const labelText =
-              edge.type === 'Choice'
-                ? edge.expression || '[expression]'
-                : edge.type === 'Default'
-                  ? 'Default'
-                  : edge.type === 'Catch'
-                    ? (edge.exceptions?.[0] || 'Throwable').split('.').pop() || 'Catch'
-                    : edge.type === 'Compensation'
-                      ? 'Compensate'
-                      : '';
-            if (!labelText) return null;
-
-            const pairKey = [edge.source, edge.target].sort().join('::');
-            const total = siblingGroups.counts.get(pairKey) ?? 1;
-            const idx = siblingGroups.indices.get(edge.id) ?? 0;
-            const { labelPos } = buildEdgePath(src, tgt, edge, idx, total);
+            const route = routedEdges.get(edge.id);
+            if (!route || !route.labelText) return null;
+            const { labelText, labelPos } = route;
             const isSelected = selectedEdgeId === edge.id;
 
             const colorCls = isSelected
@@ -1003,6 +887,8 @@ export default function SagaCanvas({
               <button
                 key={`lbl_${edge.id}`}
                 type="button"
+                data-edge-label={edge.id}
+                title={labelText}
                 aria-label={`Transition ${labelText}`}
                 style={{
                   left: labelPos.x,

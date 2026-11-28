@@ -8,6 +8,7 @@ import {
   FileCode2,
   ImageDown,
   LayoutGrid,
+  Wand2,
   ShieldCheck,
   AlertTriangle,
   Sun,
@@ -17,6 +18,7 @@ import {
 } from 'lucide-react';
 import { SAGA_TEMPLATES } from '@/lib/saga/templates';
 import { Locale, UI_COPY } from '@/lib/saga/i18n';
+import { ImportedSourceFile } from '@/lib/saga/batchImport';
 
 interface WorkspaceToolbarProps {
   machineName: string;
@@ -30,7 +32,8 @@ interface WorkspaceToolbarProps {
   onUndo: () => void;
   onRedo: () => void;
   onAutoLayout: () => void;
-  onImportFile: (text: string, filename: string) => void;
+  onOpenAiLayout: () => void;
+  onImportFiles: (files: ImportedSourceFile[]) => void;
   onExportYaml: () => void;
   onExportSvg: () => void;
   errorCount: number;
@@ -57,7 +60,8 @@ export default function WorkspaceToolbar({
   onUndo,
   onRedo,
   onAutoLayout,
-  onImportFile,
+  onOpenAiLayout,
+  onImportFiles,
   onExportYaml,
   onExportSvg,
   errorCount,
@@ -74,18 +78,34 @@ export default function WorkspaceToolbar({
   const t = UI_COPY[locale];
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const filename = file.name;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onImportFile(reader.result, filename);
-      }
-    };
-    reader.readAsText(file);
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    const MAX_FILES = 30;
+    const MAX_BYTES_PER_FILE = 5 * 1024 * 1024;
+    const selected = Array.from(fileList).slice(0, MAX_FILES);
     e.target.value = '';
+
+    const entries: ImportedSourceFile[] = await Promise.all(
+      selected.map(async (file) => {
+        if (file.size > MAX_BYTES_PER_FILE) {
+          return {
+            filename: file.name,
+            content: '',
+          };
+        }
+        const content = await file.text();
+        return {
+          filename: file.name,
+          content,
+        };
+      })
+    );
+
+    if (entries.length > 0) {
+      onImportFiles(entries);
+    }
   };
 
   return (
@@ -115,7 +135,7 @@ export default function WorkspaceToolbar({
               id="template-selector"
               value={selectedTemplateId}
               onChange={(e) => onSelectTemplate(e.target.value)}
-              className="h-8 max-w-[172px] px-2 text-xs font-medium bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-600 truncate"
+              className="h-8 max-w-[152px] px-2 text-xs font-medium bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 border border-slate-300 dark:border-slate-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-600 truncate"
             >
               {SAGA_TEMPLATES.map((tpl) => (
                 <option key={tpl.id} value={tpl.id}>
@@ -130,7 +150,7 @@ export default function WorkspaceToolbar({
         )}
 
         <div className="hidden xl:flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums truncate">
-          <span className="font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[148px]">
+          <span className="font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[126px]">
             {machineName}
           </span>
           <span aria-hidden="true">·</span>
@@ -173,6 +193,7 @@ export default function WorkspaceToolbar({
 
         <button
           type="button"
+          data-testid="btn-auto-layout"
           onClick={onAutoLayout}
           className="inline-flex items-center gap-1 h-8 px-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >
@@ -180,9 +201,22 @@ export default function WorkspaceToolbar({
           <span>{t.autoLayout}</span>
         </button>
 
+        <button
+          type="button"
+          data-testid="btn-ai-layout"
+          onClick={onOpenAiLayout}
+          title={t.aiLayoutModalTitle}
+          className="inline-flex items-center gap-1 h-8 px-2 text-xs font-medium text-blue-700 dark:text-blue-400 bg-blue-50/80 dark:bg-blue-950/50 border border-blue-200/80 dark:border-blue-800/70 hover:bg-blue-100/80 dark:hover:bg-blue-900/60 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+        >
+          <Wand2 className="w-3.5 h-3.5" />
+          <span>{t.aiLayout}</span>
+        </button>
+
         <input
           ref={fileInputRef}
+          data-testid="file-import-input"
           type="file"
+          multiple
           accept=".json,.yaml,.yml,application/json,application/x-yaml,text/yaml"
           onChange={handleFileChange}
           className="hidden"
@@ -190,6 +224,12 @@ export default function WorkspaceToolbar({
         />
         <button
           type="button"
+          data-testid="btn-import-files"
+          title={
+            locale === 'zh-TW'
+              ? '支援一次選取多個父子流程 JSON / YAML 檔案（亦支援多文件 YAML ---）'
+              : 'Select one or multiple parent/child JSON or YAML files (also supports multi-doc YAML ---)'
+          }
           onClick={() => fileInputRef.current?.click()}
           className="inline-flex items-center gap-1 h-8 px-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200/70 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer"
         >

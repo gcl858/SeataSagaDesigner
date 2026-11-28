@@ -19,6 +19,7 @@ const nextConfig: NextConfig = {
   },
   env: {
     NEXT_PUBLIC_BASE_PATH: basePath,
+    NEXT_PUBLIC_IS_STATIC_EXPORT: isGitHubPages ? 'true' : 'false',
   },
   // Allow access to remote image placeholder.
   images: {
@@ -37,6 +38,7 @@ const nextConfig: NextConfig = {
     ? {
         basePath,
         trailingSlash: true,
+        pageExtensions: ['tsx', 'jsx'],
       }
     : {}),
   transpilePackages: ['motion'],
