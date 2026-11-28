@@ -1,6 +1,6 @@
 import { parseAllDocuments } from 'yaml';
 import { SagaGraph, SeataStateMachineJson } from './types';
-import { autoLayoutGraph, parseSeataJsonToGraph } from './serializer';
+import { parseSeataJsonToGraph } from './serializer';
 import { SubMachineWorkspaceState } from './subMachines';
 
 export interface ImportedSourceFile {
@@ -127,12 +127,9 @@ function buildGraphFromParsedObject(
         : deriveFallbackMachineName(filename, docIndex),
   };
 
+  const hadExplicitLayout = hasAnyExplicitLayoutBounds(normalized);
   let graph = parseSeataJsonToGraph(normalized);
-  let autoLaidOut = false;
-  if (!hasAnyExplicitLayoutBounds(normalized) && graph.nodes.length > 1) {
-    graph = autoLayoutGraph(graph);
-    autoLaidOut = true;
-  }
+  const autoLaidOut = !hadExplicitLayout && graph.nodes.length > 1;
 
   if (yamlTemplate !== undefined) {
     graph = {

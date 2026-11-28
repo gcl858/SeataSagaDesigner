@@ -20,6 +20,7 @@ export interface RoutedEdge {
   start: Point;
   end: Point;
   control: Point | null;
+  waypoints?: Point[];
   labelText: string;
   labelPos: Point;
   labelBox: RectBox | null;
@@ -614,10 +615,308 @@ function buildSmartEndpoints(
 }
 
 /**
+ * Computes candidate horizontal routing corridors (open gutters between
+ * horizontal swimlane bands + outer top/bottom bypass channels).
+ */
+function computeOpenHorizontalCorridors(nodes: SagaNode[]): number[] {
+  if (nodes.length === 0) return [];
+  const intervals = nodes
+    .map((n) => {
+      const hasExtLabel =
+        n.type === 'Choice' ||
+        n.type === 'StartState' ||
+        n.type === 'Succeed' ||
+        n.type === 'Fail' ||
+        n.type === 'CompensationTrigger';
+      return {
+        top: n.y,
+        bottom: n.y + n.height + (hasExtLabel ? 20 : 0),
+      };
+    })
+    .sort((a, b) => a.top - b.top);
+
+  const merged: Array<{ top: number; bottom: number }> = [];
+  for (const iv of intervals) {
+    const last = merged[merged.length - 1];
+    if (!last || iv.top > last.bottom + 14) {
+      merged.push({ ...iv });
+    } else if (iv.bottom > last.bottom) {
+      last.bottom = iv.bottom;
+    }
+  }
+
+  const corridors: number[] = [];
+  const globalTop = merged[0].top;
+  const globalBottom = merged[merged.length - 1].bottom;
+
+  corridors.push(Math.round(globalTop - 36));
+  corridors.push(Math.round(globalTop - 68));
+
+  for (let i = 0; i < merged.length - 1; i += 1) {
+    const gapTop = merged[i].bottom;
+    const gapBottom = merged[i + 1].top;
+    if (gapBottom - gapTop >= 22) {
+      corridors.push(Math.round((gapTop + gapBottom) / 2));
+    }
+  }
+
+  corridors.push(Math.round(globalBottom + 36));
+  corridors.push(Math.round(globalBottom + 68));
+  return corridors;
+}
+
+function countPolylineNodeHits(
+  points: Point[],
+  obstacles: RectBox[],
+  selfInterior?: RectBox
+): number {
+  let hits = 0;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i];
+    const b = points[i + 1];
+    for (const obs of obstacles) {
+      if (segmentIntersectsRect(a, b, obs, 5)) {
+        hits += 1;
+      }
+    }
+    if (selfInterior && segmentIntersectsRect(a, b, selfInterior, 0)) {
+      hits += 1;
+    }
+  }
+  return hits;
+}
+
+function polylineLength(points: Point[]): number {
+  let len = 0;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    len += Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+  }
+  return len;
+}
+
+/**
+ * Converts a polyline into a crisp SVG path with rounded quadratic corners.
+ */
+function buildRoundedPolylinePath(points: Point[], radius = 14): string {
+  if (points.length < 2) return '';
+  if (points.length === 2) {
+    return `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)} L ${points[1].x.toFixed(1)} ${points[1].y.toFixed(1)}`;
+  }
+
+  const cmds: string[] = [`M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`];
+
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const next = points[i + 1];
+
+    const v1x = prev.x - curr.x;
+    const v1y = prev.y - curr.y;
+    const v2x = next.x - curr.x;
+    const v2y = next.y - curr.y;
+    const d1 = Math.hypot(v1x, v1y);
+    const d2 = Math.hypot(v2x, v2y);
+
+    if (d1 < 2 || d2 < 2) {
+      cmds.push(`L ${curr.x.toFixed(1)} ${curr.y.toFixed(1)}`);
+      continue;
+    }
+
+    const r = Math.min(radius, d1 * 0.42, d2 * 0.42);
+    const p1x = curr.x + (v1x / d1) * r;
+    const p1y = curr.y + (v1y / d1) * r;
+    const p2x = curr.x + (v2x / d2) * r;
+    const p2y = curr.y + (v2y / d2) * r;
+
+    cmds.push(`L ${p1x.toFixed(1)} ${p1y.toFixed(1)}`);
+    cmds.push(
+      `Q ${curr.x.toFixed(1)} ${curr.y.toFixed(1)} ${p2x.toFixed(1)} ${p2y.toFixed(1)}`
+    );
+  }
+
+  const last = points[points.length - 1];
+  cmds.push(`L ${last.x.toFixed(1)} ${last.y.toFixed(1)}`);
+  return cmds.join(' ');
+}
+
+function evalPolylineAt(points: Point[], t: number): { pt: Point; tangent: Point } {
+  const total = polylineLength(points);
+  if (points.length < 2 || total < 1e-3) {
+    return {
+      pt: points[0] ?? { x: 0, y: 0 },
+      tangent: { x: 1, y: 0 },
+    };
+  }
+  const targetDist = Math.min(1, Math.max(0, t)) * total;
+  let accum = 0;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i];
+    const b = points[i + 1];
+    const segLen = Math.hypot(b.x - a.x, b.y - a.y);
+    if (accum + segLen >= targetDist || i === points.length - 2) {
+      const localT = segLen > 1e-3 ? (targetDist - accum) / segLen : 0;
+      return {
+        pt: {
+          x: a.x + (b.x - a.x) * localT,
+          y: a.y + (b.y - a.y) * localT,
+        },
+        tangent: {
+          x: b.x - a.x,
+          y: b.y - a.y,
+        },
+      };
+    }
+    accum += segLen;
+  }
+  const last = points[points.length - 1];
+  const prev = points[points.length - 2];
+  return { pt: last, tangent: { x: last.x - prev.x, y: last.y - prev.y } };
+}
+
+/**
+ * Finds an obstacle-free horizontal corridor polyline when straight and
+ * quadratic Bezier arcs still intersect intermediate node boxes.
+ */
+function routeObstacleFreeCorridor(
+  source: SagaNode,
+  target: SagaNode,
+  edge: SagaEdge,
+  baseStart: Point,
+  catchAnchor: RoutedCatchAnchor | undefined,
+  corridors: number[],
+  intermediateObstacles: RectBox[],
+  selfInteriorObstacle: RectBox | undefined,
+  corridorSlotIndex: number
+): { waypoints: Point[]; start: Point; end: Point; path: string } | null {
+  if (corridors.length === 0) return null;
+
+  const srcCenter = getNodeCenter(source);
+  const tgtCenter = getNodeCenter(target);
+  const avgY = (srcCenter.y + tgtCenter.y) / 2;
+  const slotShift = ((corridorSlotIndex % 5) - 2) * 10;
+
+  let bestWaypoints: Point[] | null = null;
+  let bestScore = Infinity;
+
+  const isGoingRight = tgtCenter.x >= srcCenter.x;
+  const exitHorizontalOffsets = isGoingRight ? [0, 26, -26] : [0, -26, 26];
+  const entryHorizontalOffsets = isGoingRight ? [0, -26, 26] : [0, 26, -26];
+
+  for (const rawChannelY of corridors) {
+    const channelY = Math.round(rawChannelY + slotShift);
+    const channelAboveSrc = channelY < srcCenter.y;
+    const channelAboveTgt = channelY < tgtCenter.y;
+
+    for (const exitDx of exitHorizontalOffsets) {
+      let startPt: Point;
+      let firstElbow: Point;
+
+      if (edge.type === 'Catch' && catchAnchor) {
+        startPt = baseStart;
+        if (catchAnchor.side === 'left' || catchAnchor.side === 'right') {
+          const outDir = catchAnchor.side === 'right' ? 1 : -1;
+          const stubX = startPt.x + outDir * 24;
+          firstElbow = { x: stubX, y: channelY };
+        } else {
+          firstElbow = { x: startPt.x, y: channelY };
+        }
+      } else if (exitDx === 0) {
+        startPt = {
+          x: srcCenter.x,
+          y: channelAboveSrc ? source.y - 2 : source.y + source.height + 2,
+        };
+        firstElbow = { x: startPt.x, y: channelY };
+      } else {
+        const exitRight = exitDx > 0;
+        startPt = {
+          x: exitRight ? source.x + source.width + 2 : source.x - 2,
+          y: srcCenter.y,
+        };
+        firstElbow = { x: startPt.x + exitDx, y: channelY };
+      }
+
+      for (const entryDx of entryHorizontalOffsets) {
+        let endPt: Point;
+        let lastElbow: Point;
+
+        if (entryDx === 0) {
+          endPt = {
+            x: tgtCenter.x,
+            y: channelAboveTgt ? target.y - 2 : target.y + target.height + 2,
+          };
+          lastElbow = { x: endPt.x, y: channelY };
+        } else {
+          const enterLeft = entryDx < 0;
+          endPt = {
+            x: enterLeft ? target.x - 2 : target.x + target.width + 2,
+            y: tgtCenter.y,
+          };
+          lastElbow = { x: endPt.x + entryDx, y: channelY };
+        }
+
+        const pts: Point[] =
+          exitDx !== 0 || (catchAnchor && (catchAnchor.side === 'left' || catchAnchor.side === 'right'))
+            ? [
+                startPt,
+                { x: firstElbow.x, y: startPt.y },
+                firstElbow,
+                lastElbow,
+                ...(entryDx !== 0 ? [{ x: lastElbow.x, y: endPt.y }] : []),
+                endPt,
+              ]
+            : [
+                startPt,
+                firstElbow,
+                lastElbow,
+                ...(entryDx !== 0 ? [{ x: lastElbow.x, y: endPt.y }] : []),
+                endPt,
+              ];
+
+        // Deduplicate tiny adjacent identical points
+        const cleanPts: Point[] = [pts[0]];
+        for (let k = 1; k < pts.length; k += 1) {
+          const prev = cleanPts[cleanPts.length - 1];
+          if (Math.hypot(pts[k].x - prev.x, pts[k].y - prev.y) > 2) {
+            cleanPts.push(pts[k]);
+          }
+        }
+        if (cleanPts.length < 2) continue;
+
+        const hits = countPolylineNodeHits(
+          cleanPts,
+          intermediateObstacles,
+          selfInteriorObstacle
+        );
+        if (hits > 0 && bestScore < 10000) continue;
+
+        const len = polylineLength(cleanPts);
+        const verticalDrift = Math.abs(channelY - avgY);
+        const score = hits * 10000 + len + verticalDrift * 1.15;
+
+        if (score < bestScore) {
+          bestScore = score;
+          bestWaypoints = cleanPts;
+        }
+      }
+    }
+  }
+
+  if (!bestWaypoints || bestScore >= 10000) return null;
+
+  return {
+    waypoints: bestWaypoints,
+    start: bestWaypoints[0],
+    end: bestWaypoints[bestWaypoints.length - 1],
+    path: buildRoundedPolylinePath(bestWaypoints, 14),
+  };
+}
+
+/**
  * Computes obstacle-aware SVG paths and collision-free label placements for all
  * edges in a Seata Saga graph. Guarantees Catch edges dynamically anchor around
- * all 4 sides of the source node (or honor user-dragged perimeter pins) and
- * edge labels avoid covering nodes and other edge labels.
+ * all 4 sides of the source node (or honor user-dragged perimeter pins), long
+ * skip edges route cleanly along open horizontal corridors, and edge labels
+ * avoid covering nodes and other edge labels.
  */
 export function computeGraphEdgeRoutes(
   nodes: SagaNode[],
@@ -626,15 +925,17 @@ export function computeGraphEdgeRoutes(
   const nodeMap = new Map<string, SagaNode>(nodes.map((n) => [n.id, n]));
   const result = new Map<string, RoutedEdge>();
   const catchAnchors = resolveAllCatchAnchors(nodes, edges);
+  const openCorridors = computeOpenHorizontalCorridors(nodes);
 
   // Sibling edge grouping for parallel pairs
-  const pairCounts = new Map<string, number>();
+  const pairEdges = new Map<string, SagaEdge[]>();
   const edgeIndices = new Map<string, number>();
   for (const edge of edges) {
     const key = [edge.source, edge.target].sort().join('::');
-    const idx = pairCounts.get(key) ?? 0;
-    edgeIndices.set(edge.id, idx);
-    pairCounts.set(key, idx + 1);
+    const list = pairEdges.get(key) ?? [];
+    edgeIndices.set(edge.id, list.length);
+    list.push(edge);
+    pairEdges.set(key, list);
   }
 
   const allNodeBoxes: Array<{ id: string; body: RectBox; full: RectBox }> =
@@ -645,7 +946,7 @@ export function computeGraphEdgeRoutes(
     }));
 
   // Phase 1: Route every edge smoothly, bending around any intermediate node box
-  // (and wrapping around source itself when a Catch anchor is pinned on the opposite side)
+  // (or stepping into an open horizontal corridor when long skip edges span multiple columns)
   const prelim: Array<{
     edge: SagaEdge;
     source: SagaNode;
@@ -654,21 +955,25 @@ export function computeGraphEdgeRoutes(
     start: Point;
     end: Point;
     control: Point | null;
+    waypoints?: Point[];
     labelText: string;
     catchAnchor?: RoutedCatchAnchor;
   }> = [];
+
+  let corridorUsageCount = 0;
 
   for (const edge of edges) {
     const source = nodeMap.get(edge.source);
     const target = nodeMap.get(edge.target);
     if (!source || !target) continue;
 
-    const { start, end: initialEnd, catchAnchor } = buildSmartEndpoints(
+    const { start: initialStart, end: initialEnd, catchAnchor } = buildSmartEndpoints(
       source,
       target,
       edge,
       catchAnchors.get(edge.id)
     );
+    let start = initialStart;
     let end = initialEnd;
     const dx = end.x - start.x;
     const dy = end.y - start.y;
@@ -677,17 +982,41 @@ export function computeGraphEdgeRoutes(
     const ny = dx / dist;
 
     const pairKey = [edge.source, edge.target].sort().join('::');
-    const siblingTotal = pairCounts.get(pairKey) ?? 1;
+    const siblings = pairEdges.get(pairKey) ?? [edge];
+    const siblingTotal = siblings.length;
     const siblingIndex = edgeIndices.get(edge.id) ?? 0;
+
+    // Special parallel-pair handling: when a source->target pair has BOTH a
+    // Transition and a Catch edge, keep the primary Transition straight (0)
+    // and bow the Catch edge cleanly outward!
+    const hasTransitionCatchPair =
+      siblingTotal === 2 &&
+      siblings.some((s) => s.type === 'Transition') &&
+      siblings.some((s) => s.type === 'Catch');
+
+    let baseOffset = 0;
+    if (hasTransitionCatchPair) {
+      if (edge.type === 'Transition') {
+        baseOffset = 0;
+      } else {
+        // Bow Catch downward when horizontal left-to-right (or outward toward anchor side)
+        const bowSign =
+          catchAnchor?.side === 'top'
+            ? -1
+            : catchAnchor?.side === 'bottom'
+              ? 1
+              : ny >= 0
+                ? 1
+                : -1;
+        baseOffset = bowSign * 46;
+      }
+    } else if (siblingTotal > 1) {
+      baseOffset = (siblingIndex - (siblingTotal - 1) / 2) * 38;
+    }
 
     const intermediateObstacles = allNodeBoxes
       .filter((b) => b.id !== edge.source && b.id !== edge.target)
       .map((b) => b.body);
-
-    const baseOffset =
-      siblingTotal > 1
-        ? (siblingIndex - (siblingTotal - 1) / 2) * 38
-        : 0;
 
     // Detect if a pinned Catch anchor points away from its target
     let selfInteriorObstacle: RectBox | undefined;
@@ -706,7 +1035,6 @@ export function computeGraphEdgeRoutes(
         const isHorizAnchor = catchAnchor.side === 'top' || catchAnchor.side === 'bottom';
         const wrapSpan = (isHorizAnchor ? source.width : source.height) * 0.72 + 54;
         const outReach = Math.max(64, Math.min(130, dist * 0.35 + 48));
-        // Try wrapping around both sides of the source node in the anchor's outward half-plane
         for (const sign of [1, -1]) {
           for (const mult of [1, 1.45]) {
             const ctrl: Point = isHorizAnchor
@@ -747,6 +1075,7 @@ export function computeGraphEdgeRoutes(
 
     let bestControl: Point | null = null;
     let bestScore = Infinity;
+    let bestHits = Infinity;
 
     for (const cand of candidateControls) {
       const hits = countCurveNodeHits(
@@ -759,6 +1088,7 @@ export function computeGraphEdgeRoutes(
       const score = hits * 10000 + cand.penalty;
       if (score < bestScore) {
         bestScore = score;
+        bestHits = hits;
         bestControl = cand.control;
         if (hits === 0 && !selfInteriorObstacle && cand.penalty <= Math.abs(baseOffset) * 1.2 + 1.5) {
           break;
@@ -766,13 +1096,46 @@ export function computeGraphEdgeRoutes(
       }
     }
 
-    if (bestControl && selfInteriorObstacle) {
-      end = getNodeBoundaryPoint(target, bestControl);
-    }
+    let waypoints: Point[] | undefined;
+    let path: string;
 
-    const path = bestControl
-      ? `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} Q ${bestControl.x.toFixed(1)} ${bestControl.y.toFixed(1)} ${end.x.toFixed(1)} ${end.y.toFixed(1)}`
-      : `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} L ${end.x.toFixed(1)} ${end.y.toFixed(1)}`;
+    // If every standard Bezier arc still slices through an unrelated node,
+    // upgrade to an obstacle-free rounded horizontal corridor route!
+    if (bestHits > 0 && intermediateObstacles.length > 0) {
+      const corridorRoute = routeObstacleFreeCorridor(
+        source,
+        target,
+        edge,
+        start,
+        catchAnchor,
+        openCorridors,
+        intermediateObstacles,
+        selfInteriorObstacle,
+        corridorUsageCount
+      );
+      if (corridorRoute) {
+        corridorUsageCount += 1;
+        waypoints = corridorRoute.waypoints;
+        start = corridorRoute.start;
+        end = corridorRoute.end;
+        bestControl = null;
+        path = corridorRoute.path;
+      } else {
+        if (bestControl && selfInteriorObstacle) {
+          end = getNodeBoundaryPoint(target, bestControl);
+        }
+        path = bestControl
+          ? `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} Q ${bestControl.x.toFixed(1)} ${bestControl.y.toFixed(1)} ${end.x.toFixed(1)} ${end.y.toFixed(1)}`
+          : `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} L ${end.x.toFixed(1)} ${end.y.toFixed(1)}`;
+      }
+    } else {
+      if (bestControl && selfInteriorObstacle) {
+        end = getNodeBoundaryPoint(target, bestControl);
+      }
+      path = bestControl
+        ? `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} Q ${bestControl.x.toFixed(1)} ${bestControl.y.toFixed(1)} ${end.x.toFixed(1)} ${end.y.toFixed(1)}`
+        : `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} L ${end.x.toFixed(1)} ${end.y.toFixed(1)}`;
+    }
 
     prelim.push({
       edge,
@@ -782,6 +1145,7 @@ export function computeGraphEdgeRoutes(
       start,
       end,
       control: bestControl,
+      waypoints,
       labelText: getEdgeLabelText(edge),
       catchAnchor,
     });
@@ -796,9 +1160,22 @@ export function computeGraphEdgeRoutes(
 
   const labelByEdgeId = new Map<string, { pos: Point; box: RectBox | null }>();
 
+  const evalEdgePointAndTangent = (
+    item: (typeof prelim)[number],
+    t: number
+  ): { pt: Point; tangent: Point } => {
+    if (item.waypoints && item.waypoints.length >= 2) {
+      return evalPolylineAt(item.waypoints, t);
+    }
+    return {
+      pt: evalQuadratic(item.start, item.control, item.end, t),
+      tangent: evalQuadraticTangent(item.start, item.control, item.end, t),
+    };
+  };
+
   for (const item of labelOrder) {
     if (!item.labelText) {
-      const mid = evalQuadratic(item.start, item.control, item.end, 0.5);
+      const mid = evalEdgePointAndTangent(item, 0.5).pt;
       labelByEdgeId.set(item.edge.id, { pos: mid, box: null });
       continue;
     }
@@ -810,19 +1187,19 @@ export function computeGraphEdgeRoutes(
     const tCandidates =
       item.edge.type === 'Compensation'
         ? [0.5, 0.44, 0.56, 0.38, 0.62]
-        : [0.5, 0.42, 0.58, 0.34, 0.66, 0.27, 0.73, 0.2, 0.8];
+        : item.waypoints
+          ? [0.22, 0.32, 0.5, 0.16, 0.68, 0.8, 0.42, 0.58]
+          : [0.5, 0.42, 0.58, 0.34, 0.66, 0.27, 0.73, 0.2, 0.8, 0.14, 0.86];
 
-    // Prefer crisp placement directly above horizontal Choice edges; otherwise
-    // test centered on line and perpendicular offsets on both sides, extending
-    // out to ±88px if adjacent tall nodes crowd a narrow horizontal gap.
     const normalOffsets =
-      item.edge.type === 'Choice' && isHorizontal
-        ? [-20, -34, -48, -64, -78, 20, 34, 48, 64, 78, 0]
+      item.edge.type === 'Choice' && isHorizontal && !item.waypoints
+        ? [-20, -34, -48, -64, -78, 20, 34, 48, 64, 78, 0, -96, 96]
         : item.edge.type === 'Compensation'
           ? [0, -18, 18, -34, 34, -52, 52]
-          : [0, -18, 18, -34, 34, -52, 52, -70, 70, -88, 88];
+          : [0, -18, 18, -34, 34, -52, 52, -70, 70, -88, 88, -108, 108];
 
-    let bestPos: Point = evalQuadratic(item.start, item.control, item.end, 0.5);
+    const initialSample = evalEdgePointAndTangent(item, item.waypoints ? 0.25 : 0.5).pt;
+    let bestPos: Point = initialSample;
     let bestBox: RectBox = {
       x: bestPos.x - width / 2,
       y: bestPos.y - height / 2,
@@ -831,11 +1208,11 @@ export function computeGraphEdgeRoutes(
     };
     let bestCost = Infinity;
 
+    const preferredT = item.waypoints ? 0.25 : 0.5;
+
     for (const t of tCandidates) {
-      const basePt = evalQuadratic(item.start, item.control, item.end, t);
-      const tan = evalQuadraticTangent(item.start, item.control, item.end, t);
+      const { pt: basePt, tangent: tan } = evalEdgePointAndTangent(item, t);
       const tanLen = Math.hypot(tan.x, tan.y) || 1;
-      // Unit normal pointing generally upward when edge goes left->right
       let ux = -tan.y / tanLen;
       let uy = tan.x / tanLen;
       if (isHorizontal && uy > 0) {
@@ -844,12 +1221,14 @@ export function computeGraphEdgeRoutes(
       }
 
       for (const offset of normalOffsets) {
-        const cx = isHorizontal && item.edge.type === 'Choice'
-          ? basePt.x
-          : basePt.x + ux * offset;
-        const cy = isHorizontal && item.edge.type === 'Choice'
-          ? basePt.y + offset
-          : basePt.y + uy * offset;
+        const cx =
+          isHorizontal && item.edge.type === 'Choice' && !item.waypoints
+            ? basePt.x
+            : basePt.x + ux * offset;
+        const cy =
+          isHorizontal && item.edge.type === 'Choice' && !item.waypoints
+            ? basePt.y + offset
+            : basePt.y + uy * offset;
 
         const box: RectBox = {
           x: cx - width / 2,
@@ -874,7 +1253,7 @@ export function computeGraphEdgeRoutes(
           }
         }
 
-        const driftPenalty = Math.abs(t - 0.5) * 140 + Math.abs(offset) * 2.2;
+        const driftPenalty = Math.abs(t - preferredT) * 140 + Math.abs(offset) * 2.2;
         const totalCost = nodePenalty + labelPenalty + driftPenalty;
 
         if (totalCost < bestCost) {
@@ -897,8 +1276,9 @@ export function computeGraphEdgeRoutes(
       start: item.start,
       end: item.end,
       control: item.control,
+      ...(item.waypoints ? { waypoints: item.waypoints } : {}),
       labelText: item.labelText,
-      labelPos: placed?.pos ?? evalQuadratic(item.start, item.control, item.end, 0.5),
+      labelPos: placed?.pos ?? evalEdgePointAndTangent(item, 0.5).pt,
       labelBox: placed?.box ?? null,
       catchAnchor: item.catchAnchor,
     });
@@ -908,7 +1288,8 @@ export function computeGraphEdgeRoutes(
 }
 
 /**
- * Counts how many non-incident edges slice through unrelated node bounding boxes.
+ * Counts how many non-incident edges' direct chords slice through unrelated
+ * node bounding boxes (used as a layout quality heuristic).
  */
 export function countEdgesPassingThroughNodes(
   nodes: SagaNode[],
@@ -931,4 +1312,30 @@ export function countEdgesPassingThroughNodes(
     }
   }
   return count;
+}
+
+/**
+ * Counts how many ACTUAL routed SVG wires still intersect any unrelated node
+ * bounding box after obstacle-avoidance & corridor routing.
+ */
+export function countRoutedEdgeNodeHits(
+  nodes: SagaNode[],
+  edges: SagaEdge[]
+): number {
+  const routes = computeGraphEdgeRoutes(nodes, edges);
+  let totalHits = 0;
+  for (const edge of edges) {
+    const route = routes.get(edge.id);
+    if (!route) continue;
+    const obstacles = nodes
+      .filter((n) => n.id !== edge.source && n.id !== edge.target)
+      .map((n) => ({ x: n.x, y: n.y, width: n.width, height: n.height }));
+
+    if (route.waypoints && route.waypoints.length >= 2) {
+      totalHits += countPolylineNodeHits(route.waypoints, obstacles);
+    } else {
+      totalHits += countCurveNodeHits(route.start, route.control, route.end, obstacles);
+    }
+  }
+  return totalHits;
 }

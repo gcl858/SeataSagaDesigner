@@ -499,6 +499,22 @@ export function alignSwimlanesByCenter(
     if (ra !== rb) parent[rb] = ra;
   };
 
+  const clusterMin = working.map((n) =>
+    style === 'vertical-flowchart' ? n.x + n.width / 2 : n.y + n.height / 2
+  );
+  const clusterMax = [...clusterMin];
+  const unionBounded = (a: number, b: number, maxSpan: number) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra === rb) return;
+    const nextMin = Math.min(clusterMin[ra], clusterMin[rb]);
+    const nextMax = Math.max(clusterMax[ra], clusterMax[rb]);
+    if (nextMax - nextMin > maxSpan) return;
+    parent[rb] = ra;
+    clusterMin[ra] = nextMin;
+    clusterMax[ra] = nextMax;
+  };
+
   const isVertical = style === 'vertical-flowchart';
 
   if (!isVertical) {
@@ -514,12 +530,12 @@ export function alignSwimlanesByCenter(
       const aCy = a.y + a.height / 2;
       const bCx = b.x + b.width / 2;
       const bCy = b.y + b.height / 2;
-      if (Math.abs(bCx - aCx) >= 56 && Math.abs(bCy - aCy) <= 84) {
-        union(ai, bi);
+      if (Math.abs(bCx - aCx) >= 56 && Math.abs(bCy - aCy) <= 68) {
+        unionBounded(ai, bi, 72);
       }
     }
 
-    // 2. Union nearby nodes already in the same horizontal band
+    // 2. Union nearby nodes already in the same horizontal band (without collapsing distinct rows)
     for (let i = 0; i < working.length; i += 1) {
       for (let j = i + 1; j < working.length; j += 1) {
         const a = working[i];
@@ -528,8 +544,8 @@ export function alignSwimlanesByCenter(
         const aCy = a.y + a.height / 2;
         const bCx = b.x + b.width / 2;
         const bCy = b.y + b.height / 2;
-        if (Math.abs(aCy - bCy) <= 44 && Math.abs(aCx - bCx) >= 72) {
-          union(i, j);
+        if (Math.abs(aCy - bCy) <= 36 && Math.abs(aCx - bCx) >= 72) {
+          unionBounded(i, j, 44);
         }
       }
     }

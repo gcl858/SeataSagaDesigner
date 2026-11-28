@@ -190,11 +190,11 @@ export default function SagaCanvas({
     const minY = Math.min(...graph.nodes.map((n) => n.y));
     const maxX = Math.max(...graph.nodes.map((n) => n.x + n.width));
     const maxY = Math.max(...graph.nodes.map((n) => n.y + n.height));
-    const contentW = Math.max(200, maxX - minX + 100);
-    const contentH = Math.max(200, maxY - minY + 110);
+    const contentW = Math.max(200, maxX - minX + 120);
+    const contentH = Math.max(200, maxY - minY + 150);
     const nextZoom = Math.min(
       1.05,
-      Math.max(0.45, Math.min(rect.width / contentW, rect.height / contentH))
+      Math.max(0.15, Math.min(rect.width / contentW, rect.height / contentH))
     );
     const nextPanX = (rect.width - (maxX - minX) * nextZoom) / 2 - minX * nextZoom;
     const nextPanY = (rect.height - (maxY - minY) * nextZoom) / 2 - minY * nextZoom;
@@ -218,7 +218,7 @@ export default function SagaCanvas({
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       const delta = e.deltaY > 0 ? -0.08 : 0.08;
-      setZoom((prev) => Math.min(2, Math.max(0.4, Number((prev + delta).toFixed(2)))));
+      setZoom((prev) => Math.min(2, Math.max(0.15, Number((prev + delta).toFixed(2)))));
     } else {
       setPan((prev) => ({
         x: prev.x - e.deltaX * 0.6,
@@ -1127,7 +1127,7 @@ export default function SagaCanvas({
         <button
           type="button"
           onClick={() =>
-            setZoom((z) => Math.max(0.4, Number((z - 0.1).toFixed(2))))
+            setZoom((z) => Math.max(0.15, Number((z - 0.1).toFixed(2))))
           }
           aria-label="Zoom out"
           className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"

@@ -53,7 +53,7 @@ import {
 } from '@/lib/saga/batchImport';
 import { runSagaSimulation } from '@/lib/saga/simulator';
 import { Locale, UI_COPY } from '@/lib/saga/i18n';
-import { formatAiLayoutDuration } from '@/lib/saga/aiLayout';
+import { AiLayoutStyle, formatAiLayoutDuration } from '@/lib/saga/aiLayout';
 import {
   locateSelectionInSource,
   SourceLocateTarget,
@@ -813,13 +813,36 @@ export default function DesignerApp() {
     [commitGraph]
   );
 
-  const handleAutoLayout = useCallback(() => {
-    commitGraph((prev) => autoLayoutGraph(prev));
-    setLayoutFitNonce((n) => n + 1);
-    showNotice(
-      locale === 'zh-TW' ? '已完成自動拓樸排版。' : 'Applied automatic layout.'
-    );
-  }, [commitGraph, locale, showNotice]);
+  const [autoLayoutStyle, setAutoLayoutStyle] = useState<AiLayoutStyle>(
+    'horizontal-swimlane'
+  );
+
+  const handleAutoLayout = useCallback(
+    (requestedStyle?: AiLayoutStyle) => {
+      const styleToUse = requestedStyle ?? autoLayoutStyle;
+      setAutoLayoutStyle(styleToUse);
+      commitGraph((prev) => autoLayoutGraph(prev, styleToUse));
+      setLayoutFitNonce((n) => n + 1);
+      const styleLabelZh =
+        styleToUse === 'compact-executive'
+          ? '精簡簡報排版'
+          : styleToUse === 'vertical-flowchart'
+            ? '縱向泳道流程'
+            : '橫向主幹泳道';
+      const styleLabelEn =
+        styleToUse === 'compact-executive'
+          ? 'Compact Presentation'
+          : styleToUse === 'vertical-flowchart'
+            ? 'Vertical Top-Down'
+            : 'Horizontal Swimlane';
+      showNotice(
+        locale === 'zh-TW'
+          ? `已完成自動拓樸排版（${styleLabelZh}）。`
+          : `Applied automatic layout (${styleLabelEn}).`
+      );
+    },
+    [autoLayoutStyle, commitGraph, locale, showNotice]
+  );
 
   const handleApplyAiLayout = useCallback(
     (nextGraph: SagaGraph, summary: string, durationMs?: number) => {
@@ -1237,6 +1260,7 @@ export default function DesignerApp() {
         canRedo={future.length > 0}
         onUndo={handleUndo}
         onRedo={handleRedo}
+        autoLayoutStyle={autoLayoutStyle}
         onAutoLayout={handleAutoLayout}
         onOpenAiLayout={() => setAiLayoutOpen(true)}
         onImportFiles={handleImportFiles}
