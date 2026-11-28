@@ -1,0 +1,376 @@
+Name: repayment_cash_cancellation
+Comment: 信用卡臨櫃現金繳款主動取消 Child (跨流程反查 + 金額身分日期檢核 + 防雙重取消鎖 + Seata LIFO 沖正還原補償)
+StartState: LookupOriginalTransaction
+Version: '1.1.0'
+States:
+  LookupOriginalTransaction:
+    Type: ServiceTask
+    ServiceName: auditLogService
+    ServiceMethod: findLatestExecution
+    Input:
+      - omni_cash_transaction
+      - '$.[originalSequenceNumber]'
+    Output:
+      originalTransaction: '$.#root'
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectLookupFailedStatus
+    Next: CheckOriginalExists
+
+  CheckOriginalExists:
+    Type: Choice
+    Choices:
+      - Expression: "[originalTransaction]?.get('found') == true"
+        Next: VerifyCancellationEligibility
+    Default: InjectLookupFailedStatus
+
+  VerifyCancellationEligibility:
+    Type: ServiceTask
+    ServiceName: omniCashBusinessRuleValidator
+    ServiceMethod: validateCancellationMatch
+    Input:
+      - '$.#root'
+      - '$.[originalTransaction]'
+    Output:
+      cancellationValidation: '$.#root'
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectCancelRejectedStatus
+    Next: CheckEligibilityResult
+
+  CheckEligibilityResult:
+    Type: Choice
+    Choices:
+      - Expression: "[cancellationValidation]?.get('valid') == true"
+        Next: AcquireCancelLock
+    Default: InjectCancelRejectedStatus
+
+  AcquireCancelLock:
+    Type: ServiceTask
+    ServiceName: workflowBusinessLockService
+    ServiceMethod: acquire
+    Input:
+      - omni_cash_transaction
+      - CANCEL
+      - '$.[originalSequenceNumber]'
+      - '$.[_business_key_]'
+      - '$.[sequenceNumber]'
+    Output:
+      cancelLockResult: '$.#root'
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectCancelLockRejectedStatus
+    Next: CheckCancelLock
+
+  CheckCancelLock:
+    Type: Choice
+    Choices:
+      - Expression: "[cancelLockResult]?.get('acquired') == true"
+        Next: CancelCore
+    Default: InjectCancelLockRejectedStatus
+
+  CancelCore:
+    Type: ServiceTask
+    ServiceName: myOpenApiService
+    ServiceMethod: callOpenApi
+    CompensateState: RollbackCancelCore
+    Input:
+      - callApiViaOpenAPI
+      - 'specs/external/core_account_cash_deposit_api.yaml#executeCoreCashDepositRollback'
+      - creditcardid: '$.[creditcardid]'
+        partyId: '$.[partyId]'
+        branchCode: '$.[branchCode]'
+        transactionDate: '$.[transactionDate]'
+        transactionDateTime: '$.[transactionDateTime]'
+        postingDayType: '$.[postingDayType]'
+        postingDate: '$.[postingDate]'
+        paymentSourceCode: '$.[paymentSourceCode]'
+        operationType: 'B'
+        amount: '$.[amount]'
+        sequenceNumber: '$.[originalSequenceNumber]'
+        rollbackSequenceNumber: '$.[sequenceNumber]'
+    Output:
+      coreCancelResult: '$.#root'
+    Status:
+      "#root['status'] == 0": SU
+      "#root['errorType'] == 'TRANSPORT' || #root['errorType'] == 'HTTP_5XX' || #root['errorType'] == 'PARSE_ERROR'": UN
+      "#root['status'] != 0": FA
+      "$Exception{java.lang.Throwable}": UN
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectCancelPendingReconciliationStatus
+    Next: CheckCoreCancel
+
+  CheckCoreCancel:
+    Type: Choice
+    Choices:
+      - Expression: "[coreCancelResult]?.get('status') == 0"
+        Next: CancelCreditCard
+      - Expression: "[coreCancelResult]?.get('errorType') == 'TRANSPORT' || [coreCancelResult]?.get('errorType') == 'HTTP_5XX' || [coreCancelResult]?.get('errorType') == 'PARSE_ERROR'"
+        Next: InjectCancelPendingReconciliationStatus
+    Default: ReleaseLockOnCancelFailed
+
+  CancelCreditCard:
+    Type: ServiceTask
+    ServiceName: myOpenApiService
+    ServiceMethod: callOpenApi
+    Input:
+      - callApiViaOpenAPI
+      - 'specs/external/credit_card_repayment_api.yaml#executeCreditCardRepaymentRollback'
+      - creditcardid: '$.[creditcardid]'
+        partyId: '$.[partyId]'
+        branchCode: '$.[branchCode]'
+        transactionDate: '$.[transactionDate]'
+        transactionDateTime: '$.[transactionDateTime]'
+        postingDayType: '$.[postingDayType]'
+        postingDate: '$.[postingDate]'
+        paymentSourceCode: '$.[paymentSourceCode]'
+        operationType: 'B'
+        amount: '$.[amount]'
+        sequenceNumber: '$.[originalSequenceNumber]'
+        rollbackSequenceNumber: '$.[sequenceNumber]'
+    Output:
+      creditCardCancelResult: '$.#root'
+    Status:
+      "#root['status'] == 0": SU
+      "#root['errorType'] == 'TRANSPORT' || #root['errorType'] == 'HTTP_5XX' || #root['errorType'] == 'PARSE_ERROR'": UN
+      "#root['status'] != 0": FA
+      "$Exception{java.lang.Throwable}": UN
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectCancelPendingReconciliationStatus
+    Next: CheckCreditCardCancel
+
+  CheckCreditCardCancel:
+    Type: Choice
+    Choices:
+      - Expression: "[creditCardCancelResult]?.get('status') == 0"
+        Next: CommitCancelLock
+      - Expression: "[creditCardCancelResult]?.get('errorType') == 'TRANSPORT' || [creditCardCancelResult]?.get('errorType') == 'HTTP_5XX' || [creditCardCancelResult]?.get('errorType') == 'PARSE_ERROR'"
+        Next: InjectCancelPendingReconciliationStatus
+    Default: TriggerCompensation
+
+  TriggerCompensation:
+    Type: CompensationTrigger
+    Next: CheckCompensationResult
+
+  RollbackCancelCore:
+    Type: ServiceTask
+    ServiceName: myOpenApiService
+    ServiceMethod: callOpenApi
+    Input:
+      - callApiViaOpenAPI
+      - 'specs/external/core_account_cash_deposit_api.yaml#executeCoreCashDepositRestore'
+      - creditcardid: '$.[creditcardid]'
+        partyId: '$.[partyId]'
+        branchCode: '$.[branchCode]'
+        transactionDate: '$.[transactionDate]'
+        transactionDateTime: '$.[transactionDateTime]'
+        postingDayType: '$.[postingDayType]'
+        postingDate: '$.[postingDate]'
+        paymentSourceCode: '$.[paymentSourceCode]'
+        operationType: 'A'
+        amount: '$.[amount]'
+        sequenceNumber: '$.[originalSequenceNumber]'
+        rollbackSequenceNumber: '$.[sequenceNumber]'
+    Output:
+      cancelRollbackResult: '$.#root'
+    Status:
+      "#root['status'] == 0": SU
+      "#root['status'] != 0": FA
+      "$Exception{java.lang.Throwable}": UN
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectCancelRollbackFailedStatus
+
+  CheckCompensationResult:
+    Type: Choice
+    Choices:
+      - Expression: "[cancelRollbackResult]?.get('status') == 0"
+        Next: ReleaseLockOnCancelRolledBack
+    Default: InjectCancelRollbackFailedStatus
+
+  CommitCancelLock:
+    Type: ServiceTask
+    ServiceName: workflowBusinessLockService
+    ServiceMethod: commit
+    Input:
+      - omni_cash_transaction
+      - CANCEL
+      - '$.[originalSequenceNumber]'
+      - '$.[sequenceNumber]'
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectCancelPendingReconciliationStatus
+    Next: InjectCancelledStatus
+
+  ReleaseLockOnCancelFailed:
+    Type: ServiceTask
+    ServiceName: workflowBusinessLockService
+    ServiceMethod: release
+    Input:
+      - omni_cash_transaction
+      - CANCEL
+      - '$.[originalSequenceNumber]'
+      - '$.[sequenceNumber]'
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectCancelFailedStatus
+    Next: InjectCancelFailedStatus
+
+  ReleaseLockOnCancelRolledBack:
+    Type: ServiceTask
+    ServiceName: workflowBusinessLockService
+    ServiceMethod: release
+    Input:
+      - omni_cash_transaction
+      - CANCEL
+      - '$.[originalSequenceNumber]'
+      - '$.[sequenceNumber]'
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectCancelRolledBackStatus
+    Next: InjectCancelRolledBackStatus
+
+  InjectLookupFailedStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: LOOKUP_FAILED
+        status: 1
+        finalMessage: 原交易查無資料或底庫異常
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: Succeed
+
+  InjectCancelRejectedStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: CANCEL_REJECTED
+        status: 1
+        finalMessage: "$.[cancellationValidation]?.get('message') ?: '原交易狀態不符取消前置條件'"
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: Succeed
+
+  InjectCancelLockRejectedStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: CANCEL_REJECTED
+        status: 1
+        finalMessage: 原交易已有進行中或已完成之取消作業，禁止併發重複取消
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: Succeed
+
+  InjectCancelledStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: CANCELLED
+        status: 0
+        finalMessage: ''
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: Succeed
+
+  InjectCancelFailedStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: CANCEL_FAILED
+        status: 1
+        finalMessage: 核心沖正失敗
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: Succeed
+
+  InjectCancelRolledBackStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: CANCEL_ROLLED_BACK
+        status: 1
+        finalMessage: 信用卡沖銷失敗，已自動回補核心沖正
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: Succeed
+
+  InjectCancelRollbackFailedStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: CANCEL_ROLLBACK_FAILED
+        status: 1
+        finalMessage: Cancellation rollback failed (Seata native compensation)
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: NotifyRollbackFailure
+
+  InjectCancelPendingReconciliationStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: PENDING_RECONCILIATION
+        status: 1
+        finalMessage: 取消交易主機通訊逾時或狀態未明，為避免重複取消或單邊帳已轉入待查證平帳佇列
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: Succeed
+
+  NotifyRollbackFailure:
+    Type: ServiceTask
+    ServiceName: opsAlertService
+    ServiceMethod: raise
+    Input:
+      - repayment_cash_cancellation
+      - '$.[_business_key_]'
+      - '$.[sequenceNumber]'
+      - '$.[finalStatus]'
+      - '$.[finalMessage]'
+      - '$.#root'
+    Output:
+      opsAlertResult: '$.#root'
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: Succeed
+    Next: Succeed
+
+  Succeed:
+    Type: Succeed

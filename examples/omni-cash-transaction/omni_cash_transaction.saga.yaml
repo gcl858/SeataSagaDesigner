@@ -1,0 +1,192 @@
+Name: omni_cash_transaction
+Comment: 信用卡臨櫃現金繳款統一入口 Parent (Seata Saga 版)
+StartState: ValidateInput
+Version: '1.1.0'
+States:
+  ValidateInput:
+    Type: ServiceTask
+    ServiceName: openApiSchemaValidator
+    ServiceMethod: validate
+    Input:
+      - omni_cash_transaction
+      - '$.#root'
+    Output:
+      validationResult: '$.#root'
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectValidationFailedStatus
+    Next: CheckValidationResult
+
+  CheckValidationResult:
+    Type: Choice
+    Choices:
+      - Expression: "[validationResult]?.get('isValid') == false"
+        Next: InjectValidationFailedStatus
+    Default: DispatchOperation
+
+  InjectValidationFailedStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: REJECTED_VALIDATION
+        status: 1
+        finalMessage: 輸入欄位格式錯誤或條件必填不符
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: NotifyOpsIfNeeded
+
+  DispatchOperation:
+    Type: Choice
+    Choices:
+      - Expression: "[operationType] == 'A'"
+        Next: InvokeDepositSubflow
+      - Expression: "[operationType] == 'B'"
+        Next: InvokeCancellationSubflow
+    Default: InjectValidationFailedStatus
+
+  InvokeDepositSubflow:
+    Type: SubStateMachine
+    StateMachineName: repayment_cash_deposit
+    Input:
+      - '$.#root'
+    Output:
+      finalStatus: "$.[finalStatus] ?: 'ROLLBACK_FAILED'"
+      status: "$.[status] ?: 1"
+      finalMessage: "$.[finalMessage] ?: ''"
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectWorkflowFailedStatus
+    Next: CheckNeedDiagnostics
+
+  InvokeCancellationSubflow:
+    Type: SubStateMachine
+    StateMachineName: repayment_cash_cancellation
+    Input:
+      - '$.#root'
+    Output:
+      finalStatus: "$.[finalStatus] ?: 'CANCEL_ROLLBACK_FAILED'"
+      status: "$.[status] ?: 1"
+      finalMessage: "$.[finalMessage] ?: ''"
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectWorkflowFailedStatus
+    Next: CheckNeedDiagnostics
+
+  InjectWorkflowFailedStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: SYSTEM_ERROR
+        status: 1
+        finalMessage: 子流程執行異常
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: CheckNeedDiagnostics
+
+  CheckNeedDiagnostics:
+    Type: Choice
+    Choices:
+      - Expression: "[status] != 0 && ([finalMessage] == null || [finalMessage] == '' || [errors] == null)"
+        Next: EnrichFailureDiagnostics
+    Default: NotifyOpsIfNeeded
+
+  EnrichFailureDiagnostics:
+    Type: ServiceTask
+    ServiceName: auditLogService
+    ServiceMethod: extractFailureDiagnostics
+    Input:
+      - '$.[_business_key_]'
+      - '$.[finalStatus]'
+      - '$.#root'
+    Output:
+      finalMessage: '$.[message]'
+      errors: '$.[errors]'
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: NotifyOpsIfNeeded
+    Next: NotifyOpsIfNeeded
+
+  NotifyOpsIfNeeded:
+    Type: ServiceTask
+    ServiceName: opsAlertService
+    ServiceMethod: raise
+    Input:
+      - omni_cash_transaction
+      - '$.[_business_key_]'
+      - '$.[sequenceNumber]'
+      - '$.[finalStatus]'
+      - '$.[finalMessage]'
+      - operationType: '$.[operationType]'
+    Output:
+      opsAlertResult: '$.#root'
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: AssembleOutputAndEnd
+    Next: AssembleOutputAndEnd
+
+  AssembleOutputAndEnd:
+    Type: ScriptTask
+    ScriptType: groovy
+    Input:
+      - ctx: '$.#root'
+    ScriptContent: |
+      int st = (ctx.status != null) ? (ctx.status as int) : 1
+      String fs = ctx.finalStatus ?: 'FAILED'
+      int httpCode = 200
+      if (st == 0) {
+        httpCode = 200
+      } else if (fs == 'PENDING_RECONCILIATION') {
+        httpCode = 202
+      } else if (fs == 'REJECTED_VALIDATION') {
+        httpCode = 400
+      } else if (fs == 'IDEMPOTENT_REPLAY' || fs == 'CANCEL_REJECTED') {
+        httpCode = 403
+      } else if (fs == 'ROLLBACK_FAILED' || fs == 'CANCEL_ROLLBACK_FAILED') {
+        httpCode = 409
+      } else if (fs == 'LOOKUP_FAILED' || fs == 'SYSTEM_ERROR') {
+        httpCode = 500
+      }
+
+      def valErrors = ctx.validationResult?.errors
+      def resolvedErrors = (valErrors instanceof List && !valErrors.isEmpty()) ? valErrors : (ctx.errors ?: null)
+
+      def resp = [
+        track_id      : ctx.track_id ?: ctx.sequenceNumber ?: '',
+        workflow      : (ctx.operationType == 'A') ? 'REPAYMENT' : 'CANCELLATION',
+        status        : st,
+        finalStatus   : fs,
+        _finalHttpCode: httpCode,
+        message       : ctx.finalMessage ?: '',
+        errors        : resolvedErrors,
+        result        : [
+          partyId               : ctx.partyId,
+          branchCode            : ctx.branchCode,
+          operationType         : ctx.operationType,
+          amount                : ctx.amount,
+          sequenceNumber        : ctx.sequenceNumber,
+          originalSequenceNumber: ctx.originalSequenceNumber
+        ]
+      ]
+      // 僅業務成功 (st == 0) 省略 message 與 errors；所有業務失敗與系統異常均保留完整診斷資訊
+      if (st == 0) {
+        resp.remove('message')
+        resp.remove('errors')
+      }
+      return resp
+    Output:
+      workflowdata: '$.#root'
+    Next: Succeed
+
+  Succeed:
+    Type: Succeed

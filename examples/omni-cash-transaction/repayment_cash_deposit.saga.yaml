@@ -1,0 +1,260 @@
+Name: repayment_cash_deposit
+Comment: 信用卡臨櫃現金繳款正向 Child (Seata 原生 Status 矩陣 + UN 先查證後補償 + LIFO 補償)
+StartState: CallCoreForward
+Version: '1.1.0'
+States:
+  CallCoreForward:
+    Type: ServiceTask
+    ServiceName: myOpenApiService
+    ServiceMethod: callOpenApi
+    CompensateState: RollbackCore
+    Input:
+      - callApiViaOpenAPI
+      - 'specs/external/core_account_cash_deposit_api.yaml#executeCoreCashDeposit'
+      - creditcardid: '$.[creditcardid]'
+        partyId: '$.[partyId]'
+        branchCode: '$.[branchCode]'
+        transactionDate: '$.[transactionDate]'
+        transactionDateTime: '$.[transactionDateTime]'
+        postingDayType: '$.[postingDayType]'
+        postingDate: '$.[postingDate]'
+        paymentSourceCode: '$.[paymentSourceCode]'
+        operationType: 'A'
+        amount: '$.[amount]'
+        sequenceNumber: '$.[sequenceNumber]'
+    Output:
+      coreResult: '$.#root'
+    Status:
+      "#root['status'] == 0": SU
+      "#root['errorType'] == 'TRANSPORT' || #root['errorType'] == 'HTTP_5XX' || #root['errorType'] == 'PARSE_ERROR'": UN
+      "#root['status'] != 0": FA
+      "$Exception{java.lang.Throwable}": UN
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectCorePendingReconciliationStatus
+    Next: CheckCoreResult
+
+  CheckCoreResult:
+    Type: Choice
+    Choices:
+      - Expression: "[coreResult]?.get('status') == 0"
+        Next: CallCreditCardForward
+      - Expression: "[coreResult]?.get('errorType') == 'TRANSPORT' || [coreResult]?.get('errorType') == 'HTTP_5XX' || [coreResult]?.get('errorType') == 'PARSE_ERROR'"
+        Next: InjectCorePendingReconciliationStatus
+    Default: InjectFailedStatus
+
+  CallCreditCardForward:
+    Type: ServiceTask
+    ServiceName: myOpenApiService
+    ServiceMethod: callOpenApi
+    Input:
+      - callApiViaOpenAPI
+      - 'specs/external/credit_card_repayment_api.yaml#executeCreditCardRepayment'
+      - creditcardid: '$.[creditcardid]'
+        partyId: '$.[partyId]'
+        branchCode: '$.[branchCode]'
+        transactionDate: '$.[transactionDate]'
+        transactionDateTime: '$.[transactionDateTime]'
+        postingDayType: '$.[postingDayType]'
+        postingDate: '$.[postingDate]'
+        paymentSourceCode: '$.[paymentSourceCode]'
+        operationType: 'A'
+        amount: '$.[amount]'
+        sequenceNumber: '$.[sequenceNumber]'
+    Output:
+      creditCardResult: '$.#root'
+    Status:
+      "#root['status'] == 0": SU
+      "#root['errorType'] == 'TRANSPORT' || #root['errorType'] == 'HTTP_5XX'": UN
+      "#root['status'] != 0": FA
+      "$Exception{java.lang.Throwable}": UN
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: QueryCreditCardStatus
+    Next: CheckCreditCardResult
+
+  CheckCreditCardResult:
+    Type: Choice
+    Choices:
+      - Expression: "[creditCardResult]?.get('status') == 0"
+        Next: InjectSuccessStatus
+      - Expression: "[creditCardResult]?.get('errorType') == 'TRANSPORT' || [creditCardResult]?.get('errorType') == 'HTTP_5XX' || [creditCardResult]?.get('errorType') == 'PARSE_ERROR'"
+        Next: QueryCreditCardStatus
+    Default: TriggerCompensation
+
+  QueryCreditCardStatus:
+    Type: ServiceTask
+    ServiceName: myOpenApiService
+    ServiceMethod: callOpenApi
+    Input:
+      - callApiViaOpenAPI
+      - 'specs/external/credit_card_repayment_api.yaml#queryCreditCardRepaymentStatus'
+      - creditcardid: '$.[creditcardid]'
+        partyId: '$.[partyId]'
+        amount: '$.[amount]'
+        sequenceNumber: '$.[sequenceNumber]'
+    Output:
+      creditCardQueryResult: '$.#root'
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectPendingReconciliationStatus
+    Next: CheckCreditCardQueryResult
+
+  CheckCreditCardQueryResult:
+    Type: Choice
+    Choices:
+      - Expression: "[creditCardQueryResult]?.get('status') == 0 && [creditCardQueryResult]?.get('result')?.get('hostTxStatus') == 'SUCCESS'"
+        Next: InjectSuccessStatus
+      - Expression: "[creditCardQueryResult]?.get('status') == 0 && ([creditCardQueryResult]?.get('result')?.get('hostTxStatus') == 'NOT_FOUND' || [creditCardQueryResult]?.get('result')?.get('hostTxStatus') == 'FAILED')"
+        Next: TriggerCompensation
+    Default: InjectPendingReconciliationStatus
+
+  TriggerCompensation:
+    Type: CompensationTrigger
+    Next: CheckCompensationResult
+
+  RollbackCore:
+    Type: ServiceTask
+    ServiceName: myOpenApiService
+    ServiceMethod: callOpenApi
+    Input:
+      - callApiViaOpenAPI
+      - 'specs/external/core_account_cash_deposit_api.yaml#executeCoreCashDepositRollback'
+      - creditcardid: '$.[creditcardid]'
+        partyId: '$.[partyId]'
+        branchCode: '$.[branchCode]'
+        transactionDate: '$.[transactionDate]'
+        transactionDateTime: '$.[transactionDateTime]'
+        postingDayType: '$.[postingDayType]'
+        postingDate: '$.[postingDate]'
+        paymentSourceCode: '$.[paymentSourceCode]'
+        operationType: 'B'
+        amount: '$.[amount]'
+        sequenceNumber: '$.[sequenceNumber]'
+        rollbackSequenceNumber: '$.[sequenceNumber]'
+    Output:
+      rollbackResult: '$.#root'
+    Status:
+      "#root['status'] == 0": SU
+      "#root['status'] != 0": FA
+      "$Exception{java.lang.Throwable}": UN
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: InjectRollbackFailedStatus
+
+  CheckCompensationResult:
+    Type: Choice
+    Choices:
+      - Expression: "[rollbackResult]?.get('status') == 0"
+        Next: InjectRolledBackStatus
+    Default: InjectRollbackFailedStatus
+
+  InjectSuccessStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: SUCCESS
+        status: 0
+        finalMessage: ''
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: Succeed
+
+  InjectFailedStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: FAILED
+        status: 1
+        finalMessage: 核心入帳失敗
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: Succeed
+
+  InjectRolledBackStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: ROLLED_BACK
+        status: 1
+        finalMessage: 信用卡入帳失敗，已自動沖正核心入帳
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: Succeed
+
+  InjectPendingReconciliationStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: PENDING_RECONCILIATION
+        status: 1
+        finalMessage: 信用卡主機通訊逾時且狀態反查未果，為避免單邊帳已轉入待查證平帳佇列
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: Succeed
+
+  InjectCorePendingReconciliationStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: PENDING_RECONCILIATION
+        status: 1
+        finalMessage: 核心入帳通訊逾時或回應異常，為避免單邊帳已轉入待查證平帳佇列
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: Succeed
+
+  InjectRollbackFailedStatus:
+    Type: ServiceTask
+    ServiceName: sagaInject
+    ServiceMethod: apply
+    Input:
+      - finalStatus: ROLLBACK_FAILED
+        status: 1
+        finalMessage: Core rollback failed (Seata native compensation)
+    Output:
+      finalStatus: '$.[finalStatus]'
+      status: '$.[status]'
+      finalMessage: '$.[finalMessage]'
+    Next: NotifyRollbackFailure
+
+  NotifyRollbackFailure:
+    Type: ServiceTask
+    ServiceName: opsAlertService
+    ServiceMethod: raise
+    Input:
+      - repayment_cash_deposit
+      - '$.[_business_key_]'
+      - '$.[sequenceNumber]'
+      - '$.[finalStatus]'
+      - '$.[finalMessage]'
+      - '$.#root'
+    Output:
+      opsAlertResult: '$.#root'
+    Catch:
+      - Exceptions:
+          - java.lang.Throwable
+        Next: Succeed
+    Next: Succeed
+
+  Succeed:
+    Type: Succeed
