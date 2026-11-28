@@ -15,6 +15,125 @@ export default function ArchitectureDiagram({
 }: ArchitectureDiagramProps) {
   const isZh = locale === 'zh-TW';
 
+  if (id === 'layout-routing-pipeline') {
+    return (
+      <svg
+        viewBox="0 0 840 240"
+        className="w-full h-auto block text-slate-800 dark:text-slate-100"
+        role="img"
+        aria-label={
+          isZh
+            ? '多層語意自動排版與無遮擋通道繞道管線架構圖'
+            : 'Saga-aware multi-band auto-layout and obstacle-free corridor routing pipeline'
+        }
+      >
+        <defs>
+          <marker
+            id="lay-arrow"
+            viewBox="0 0 10 10"
+            refX="8"
+            refY="5"
+            markerWidth="6"
+            markerHeight="6"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 1 L 10 5 L 0 9 z" className="fill-blue-600 dark:fill-blue-400" />
+          </marker>
+        </defs>
+
+        {/* Stage 1 */}
+        <rect x="14" y="34" width="182" height="172" rx="10" className="fill-white dark:fill-slate-900 stroke-slate-300 dark:stroke-slate-700" strokeWidth="1.5" />
+        <text x="105" y="62" textAnchor="middle" className="fill-blue-700 dark:fill-blue-400 text-[11px] font-mono font-semibold">
+          STAGE 1 · DAG
+        </text>
+        <text x="105" y="84" textAnchor="middle" className="fill-slate-900 dark:fill-slate-100 text-[13px] font-semibold">
+          {isZh ? '語意角色與泳道分類' : 'Semantic Swimlanes'}
+        </text>
+        <text x="28" y="114" className="fill-slate-600 dark:fill-slate-300 text-[11px]">
+          {isZh ? '• 上層 -1：逾時 / 對帳 / 診斷' : '• Band -1: Timeout / Query'}
+        </text>
+        <text x="28" y="136" className="fill-slate-600 dark:fill-slate-300 text-[11px]">
+          {isZh ? '• 主幹  0：正向主流程置中' : '• Band  0: 0px Happy Spine'}
+        </text>
+        <text x="28" y="158" className="fill-slate-600 dark:fill-slate-300 text-[11px]">
+          {isZh ? '• 下層 +1：配對補償與拒單' : '• Band +1: Compensate / Reject'}
+        </text>
+        <text x="28" y="180" className="fill-slate-600 dark:fill-slate-300 text-[11px]">
+          {isZh ? '• 底層 +2/+3：回滾鏈與告警' : '• Band +2/+3: Rollback & Alert'}
+        </text>
+
+        <line x1="196" y1="120" x2="220" y2="120" className="stroke-blue-600 dark:stroke-blue-400" strokeWidth="1.75" markerEnd="url(#lay-arrow)" />
+
+        {/* Stage 2 */}
+        <rect x="226" y="34" width="182" height="172" rx="10" className="fill-white dark:fill-slate-900 stroke-blue-500 dark:stroke-blue-400" strokeWidth="1.5" />
+        <text x="317" y="62" textAnchor="middle" className="fill-blue-700 dark:fill-blue-400 text-[11px] font-mono font-semibold">
+          STAGE 2 · LAYER
+        </text>
+        <text x="317" y="84" textAnchor="middle" className="fill-slate-900 dark:fill-slate-100 text-[13px] font-semibold">
+          {isZh ? '最長路徑分欄與間距' : 'Longest-Path Columns'}
+        </text>
+        <text x="240" y="114" className="fill-slate-600 dark:fill-slate-300 text-[11px]">
+          {isZh ? '• Kahn DAG 嚴格順向展開' : '• Strict DAG Left-to-Right'}
+        </text>
+        <text x="240" y="136" className="fill-slate-600 dark:fill-slate-300 text-[11px]">
+          {isZh ? '• Succeed 恆定置於最末端' : '• Succeed Strictly Rightmost'}
+        </text>
+        <text x="240" y="158" className="fill-slate-600 dark:fill-slate-300 text-[11px]">
+          {isZh ? '• 補償任務垂直對齊原任務' : '• Plumb-Aligned Compensate'}
+        </text>
+        <text x="240" y="180" className="fill-slate-600 dark:fill-slate-300 text-[11px]">
+          {isZh ? '• 依 SpEL 標籤動態調距' : '• SpEL Label-Aware Gaps'}
+        </text>
+
+        <line x1="408" y1="120" x2="432" y2="120" className="stroke-blue-600 dark:stroke-blue-400" strokeWidth="1.75" markerEnd="url(#lay-arrow)" />
+
+        {/* Stage 3 */}
+        <rect x="438" y="34" width="182" height="172" rx="10" className="fill-white dark:fill-slate-900 stroke-amber-500 dark:stroke-amber-400" strokeWidth="1.5" />
+        <text x="529" y="62" textAnchor="middle" className="fill-amber-700 dark:fill-amber-400 text-[11px] font-mono font-semibold">
+          STAGE 3 · ROUTE
+        </text>
+        <text x="529" y="84" textAnchor="middle" className="fill-slate-900 dark:fill-slate-100 text-[13px] font-semibold">
+          {isZh ? '360° 錨點與通道繞道' : '360° Catch & Corridors'}
+        </text>
+        <text x="452" y="114" className="fill-slate-600 dark:fill-slate-300 text-[11px]">
+          {isZh ? '• Catch 四邊動態追蹤目標' : '• 4-Border Auto Catch Tracking'}
+        </text>
+        <text x="452" y="136" className="fill-slate-600 dark:fill-slate-300 text-[11px]">
+          {isZh ? '• 可拖曳釘選 sourceAnchor' : '• Draggable Pinned Anchor'}
+        </text>
+        <text x="452" y="158" className="fill-slate-600 dark:fill-slate-300 text-[11px]">
+          {isZh ? '• 同起終點平行弧線分離' : '• Parallel Transition/Catch'}
+        </text>
+        <text x="452" y="180" className="fill-slate-600 dark:fill-slate-300 text-[11px]">
+          {isZh ? '• 長距跨欄圓角通道匯流排' : '• Rounded Corridor Bus (0 Hits)'}
+        </text>
+
+        <line x1="620" y1="120" x2="644" y2="120" className="stroke-blue-600 dark:stroke-blue-400" strokeWidth="1.75" markerEnd="url(#lay-arrow)" />
+
+        {/* Stage 4 */}
+        <rect x="650" y="34" width="176" height="172" rx="10" className="fill-emerald-50/70 dark:fill-emerald-950/30 stroke-emerald-600 dark:stroke-emerald-500" strokeWidth="1.75" />
+        <text x="738" y="62" textAnchor="middle" className="fill-emerald-700 dark:fill-emerald-400 text-[11px] font-mono font-semibold">
+          STAGE 4 · VERIFY
+        </text>
+        <text x="738" y="84" textAnchor="middle" className="fill-slate-900 dark:fill-slate-100 text-[13px] font-semibold">
+          {isZh ? '零重疊品質保證' : 'Zero-Collision Output'}
+        </text>
+        <text x="664" y="114" className="fill-slate-700 dark:fill-slate-200 text-[11px]">
+          {isZh ? '✓ 0 節點重疊' : '✓ 0 Node Overlaps'}
+        </text>
+        <text x="664" y="136" className="fill-slate-700 dark:fill-slate-200 text-[11px]">
+          {isZh ? '✓ 0 連線穿過無關節點' : '✓ 0 Routed Node Hits'}
+        </text>
+        <text x="664" y="158" className="fill-slate-700 dark:fill-slate-200 text-[11px]">
+          {isZh ? '✓ 0 標籤互相或節點遮擋' : '✓ 0 Label Collisions'}
+        </text>
+        <text x="664" y="180" className="fill-slate-700 dark:fill-slate-200 text-[11px]">
+          {isZh ? '✓ 15%–200% 適應大型畫布' : '✓ 15%–200% Fit View'}
+        </text>
+      </svg>
+    );
+  }
+
   if (id === 'yaml-ast-pipeline') {
     return (
       <svg

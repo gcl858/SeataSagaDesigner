@@ -36,3 +36,13 @@
 ### 三層 SubStateMachine 呼叫堆疊與防護機制
 
 *架構圖 5-1：orderFulfillmentSaga → paymentSettlementSubSaga → fraudVerificationSubSaga 三層呼叫鏈、獨立復原歷史與循環參考防護。*
+
+## 多檔父子流程批次匯入與實務專案範例
+
+點擊工作列「匯入 JSON/YAML」時，可一次選取最多 30 個父子流程檔案（支援 .yaml、.yml、.json、多文件 YAML --- 與 JSON 陣列）。系統會忽略選檔順序，自動依據 SubStateMachine 的 StateMachineName 依賴圖識別頂層父狀態機並串聯所有子狀態機，並在工作列下方顯示天藍色「多檔父子匯入」快速切換列（標示「父」、「子」、「獨立」），同時即時回報缺少的子流程參照、重複命名或部分語法錯誤。
+
+專案內建 examples/omni-cash-transaction/ 真實實務範例組（包含父流程 omni_cash_transaction.saga.yaml 與兩個子流程 repayment_cash_deposit.saga.yaml、repayment_cash_cancellation.saga.yaml），一次全選匯入即可體驗自動父子連結、雙擊鑽取與多層語意自動排版。
+
+![一次匯入三支 omni-cash-transaction 父子 YAML 檔案後顯示多檔父子切換列與自動排版模式選單的截圖](../public/docs/images/09-auto-layout-omni-menu.png)
+
+*圖 5-3：一次匯入三支臨櫃現金繳款 YAML 檔案後，頂部自動建立「父 omni_cash_transaction」與兩個子狀態機快速切換按鈕，無須額外設定即可雙擊鑽取。*

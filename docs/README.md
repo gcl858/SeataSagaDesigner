@@ -1,6 +1,6 @@
 # Apache Seata Saga State Machine Designer 完整使用與架構說明文件
 
-本系列文件涵蓋視覺化設計器、雙欄行號閃爍同步、YAML `#` 註解保留、多層 `SubStateMachine` 巢狀鑽取、分散式事務補償模擬與 VS Code 瀏覽器／桌面版擴充套件的完整圖文操作指南。
+本系列文件涵蓋視覺化設計器、360° 動態 Catch 錨點、五層語意自動排版、MiniMax AI 排版、雙欄行號閃爍同步、YAML `#` 註解保留、多檔父子匯入、多層 `SubStateMachine` 巢狀鑽取、分散式事務補償模擬與 VS Code 瀏覽器／桌面版擴充套件的完整圖文操作指南。
 
 ## GitHub Pages 部署
 
@@ -16,3 +16,4 @@
 - [06. 拓樸驗證與分散式事務補償模擬](./06-validation-and-simulation.md) — 使用即時 Seata 規範診斷抽屜與互動式執行模擬器，在部署至正式微服務叢集前完整演練成功提交、異常捕獲（Catch）與 LIFO 反向補償流程。
 - [07. VS Code 瀏覽器版與桌面版擴充套件整合](./07-vscode-extension.md) — 一鍵下載免編譯、零 Node.js 依賴的通用 VS Code Web Extension，直接在 vscode.dev、github.dev、Codespaces 與桌面版 VS Code 中視覺化編輯 Saga 檔案。
 - [08. Seata STATE_LANG 規格參考與常見問題](./08-schema-and-faq.md) — Apache Seata Saga STATE_LANG JSON / YAML 核心欄位總表、Input/Output 參數表達式語法速查，以及匯入、註解保留與 VS Code 部署常見問題解答。
+- [09. 多層語意自動排版、360° Catch 錨點與 AI 排版](./09-auto-layout-and-ai.md) — 深入掌握針對大型實務 Seata Saga 流程設計的五層語意泳道自動排版、360° 可拖曳 Catch 邊界錨點、無遮擋圓角通道繞道，以及整合 MiniMax 模型的 AI 智慧語意排版。

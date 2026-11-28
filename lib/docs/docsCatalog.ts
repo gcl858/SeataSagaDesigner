@@ -5,7 +5,8 @@ export type ArchitectureDiagramId =
   | 'saga-lifecycle'
   | 'yaml-ast-pipeline'
   | 'submachine-stack'
-  | 'vscode-bridge';
+  | 'vscode-bridge'
+  | 'layout-routing-pipeline';
 
 export interface DocFigure {
   src: string;
@@ -91,7 +92,7 @@ const CHAPTERS_ZH: DocChapter[] = [
               {
                 label: '工作列',
                 detail:
-                  '切換內建範本、檢視目前狀態機名稱與節點數，執行復原/重做、自動排版、匯入/匯出 YAML 與 SVG、結構驗證、開啟 VS Code 擴充整合，以及切換語系（繁中/EN）與深淺色主題。',
+                  '切換內建範本、檢視目前狀態機名稱與節點數，執行復原/重做、自動排版與模式選單（橫向主幹泳道／精簡簡報／縱向流程）、MiniMax AI 排版、多檔父子匯入與匯出 YAML／SVG、結構驗證、開啟 VS Code 擴充整合，以及切換語系（繁中/EN）與深淺色主題。',
               },
               {
                 label: '左側節點庫與邊緣鉗鈕',
@@ -132,7 +133,7 @@ const CHAPTERS_ZH: DocChapter[] = [
             ['Ctrl + Y / Shift + Ctrl + Z', '重做已復原的變更', '畫布與雙欄模式'],
             ['Alt + ←', '從 SubStateMachine 子狀態機快速返回上一層父狀態機', '巢狀子狀態機檢視'],
             ['Escape', '取消目前連線模式或關閉開啟中的彈窗', '全域'],
-            ['滑鼠滾輪 / 空白拖曳畫布', '平滑縮放畫布（40%–200%）與平移視野，左下角提供適應畫面與重設縮放', '畫布區域'],
+            ['滑鼠滾輪 / 空白拖曳畫布', '平滑縮放畫布（15%–200%）與平移視野，右下角提供適應畫面（完整容納 27+ 節點大型流程）與重設縮放', '畫布區域'],
           ],
         },
       },
@@ -186,10 +187,11 @@ const CHAPTERS_ZH: DocChapter[] = [
       },
       {
         id: 'four-edge-types',
-        heading: '4 種連線語意與自動拓樸排版',
+        heading: '4 種連線語意、360° 動態 Catch 錨點與自動拓樸排版',
         paragraphs: [
           '畫布底部圖例清楚區分流程中的 4 種連線語意：實線灰藍箭頭代表一般順序轉移（Next）或條件分支（Choice / Default）；紫色虛線代表補償綁定（CompensateState）；橘色點線代表例外捕獲（Catch）。',
-          '若手動拖曳後連線交錯，隨時點擊工作列「自動排版」按鈕，演算法會依據拓樸層級自動排列主流程，並將所有 IsForCompensation 補償節點整齊對齊於其對應正向任務正下方。',
+          '所有 Catch 例外連線皆內建 360° 動態邊界追蹤：系統會依目標節點方位自動將橘色圓形錨點貼齊來源節點的上、右、下、左四個邊界並主動避開同側的 Next 與 Compensate 連線；使用者亦可直接拖曳該橘色錨點沿著節點四邊任意釘選（寫入 style.sourceAnchor），雙擊錨點或於右側屬性面板即可一鍵恢復自動追蹤。',
+          '若手動拖曳後連線交錯，隨時點擊工作列「自動排版」按鈕（或展開右側下拉選單切換「橫向主幹泳道」、「精簡簡報排版」、「縱向泳道流程」），多層語意演算法會自動對齊正向主幹、將補償與回滾鏈分層排列，並搭配無遮擋圓角通道繞道消除所有節點重疊與連線穿越（詳見第 09 章）。',
         ],
         callout: {
           kind: 'tip',
@@ -255,7 +257,7 @@ const CHAPTERS_ZH: DocChapter[] = [
         heading: '匯入、編輯並完整保留所有 # 註解',
         paragraphs: [
           '實務上團隊經常在 Seata Saga YAML 設定檔中撰寫豐富的業務說明、風控門檻理由與維運聯絡註解。傳統「JSON.parse → YAML.stringify」流程會無條件丟棄所有 # 註解，導致視覺化工具難以融入 Git 團隊協作。',
-          '本設計器採用基於 AST（抽象語法樹）的無損調和演算法：無論是檔案表頭註解、區塊前註解（commentBefore）、行尾註解（inline # comment）、陣列項目註解或檔尾註解，在畫布進行節點拖曳、連線調整或重新命名後重新匯出 YAML 時，全部都會精準保留於對應位置。',
+          '本設計器採用基於 AST（抽象語法樹）的無損調和演算法：無論是檔案表頭註解、區塊前註解（commentBefore）、行尾註解（inline # comment）、陣列項目註解或檔尾註解，在畫布進行節點拖曳、調整 Catch 邊界錨點（style.sourceAnchor）或重新命名後重新匯出 YAML 時，全部都會精準保留於對應位置。同時支援以 --- 分隔的多文件 YAML 一次批次匯入，且每份文件皆獨立保存各自的註解範本。',
         ],
         figures: [
           {
@@ -371,6 +373,22 @@ States:
           '循環參考偵測與阻斷：無論是自我呼叫（A → A）或跨層環狀參考（A → B → A），系統都會在雙擊進入與結構驗證階段即時阻斷並發出錯誤提示。',
           '每層獨立 Undo / Redo 歷史：在子狀態機按 Ctrl+Z 只會復原子狀態機本身的編輯，絕不誤刪父狀態機節點。',
           '子狀態機更名連動：在子狀態機修改全域 Name 後，返回父層時其對應節點的 StateMachineName 會自動同步更新。',
+        ],
+      },
+      {
+        id: 'batch-import-parent-child',
+        heading: '多檔父子流程批次匯入與實務專案範例',
+        paragraphs: [
+          '點擊工作列「匯入 JSON/YAML」時，可一次選取最多 30 個父子流程檔案（支援 .yaml、.yml、.json、多文件 YAML --- 與 JSON 陣列）。系統會忽略選檔順序，自動依據 SubStateMachine 的 StateMachineName 依賴圖識別頂層父狀態機並串聯所有子狀態機，並在工作列下方顯示天藍色「多檔父子匯入」快速切換列（標示「父」、「子」、「獨立」），同時即時回報缺少的子流程參照、重複命名或部分語法錯誤。',
+          '專案內建 examples/omni-cash-transaction/ 真實實務範例組（包含父流程 omni_cash_transaction.saga.yaml 與兩個子流程 repayment_cash_deposit.saga.yaml、repayment_cash_cancellation.saga.yaml），一次全選匯入即可體驗自動父子連結、雙擊鑽取與多層語意自動排版。',
+        ],
+        figures: [
+          {
+            src: '/docs/images/09-auto-layout-omni-menu.png',
+            alt: '一次匯入三支 omni-cash-transaction 父子 YAML 檔案後顯示多檔父子切換列與自動排版模式選單的截圖',
+            caption:
+              '圖 5-3：一次匯入三支臨櫃現金繳款 YAML 檔案後，頂部自動建立「父 omni_cash_transaction」與兩個子狀態機快速切換按鈕，無須額外設定即可雙擊鑽取。',
+          },
         ],
       },
     ],
@@ -549,6 +567,24 @@ cd seata-saga-vscode-web && npx @vscode/vsce package --target web && code --inst
             ['Input / Output', 'Task / SubMachine', 'array / object', '從上下文提取參數（$.[key]）與寫回執行結果（$.#root）的映射規則。'],
             ['Status', 'ServiceTask', 'object', '依據回傳值或例外動態判定 SU（成功）、FA（失敗）或 UN（未知）。'],
             ['Catch / Retry', 'Task / SubMachine', 'array', '定義例外類別捕獲轉移目標（Next）與指數退避重試策略（IntervalSeconds、MaxAttempts、BackoffRate）。'],
+            ['style.bounds / style.sourceAnchor', '設計器視覺中繼', 'object', '保存節點座標尺寸（x、y、width、height）與手動釘選之 Catch 錨點（side、ratio）；關閉「包含畫布座標 (style)」時會自動清除。'],
+          ],
+        },
+      },
+      {
+        id: 'env-and-deployment',
+        heading: '伺服器環境變數與部署設定（.env.example）',
+        paragraphs: [
+          '若於自架環境啟用 MiniMax AI 語意排版或建置 GitHub Pages 靜態網站，可依以下環境變數表設定伺服器端機密與建置旗標（API 金鑰僅存在伺服器端，絕不暴露至瀏覽器）：',
+        ],
+        table: {
+          headers: ['環境變數', '用途', '預設值 / 說明'],
+          rows: [
+            ['MINIMAX_API_KEY', 'MiniMax AI 排版驗證金鑰', '選填；設定後啟用 /api/saga/ai-layout（未設定時仍可使用完整本機自動排版）。'],
+            ['MINIMAX_BASE_URL', 'MiniMax API 端點位址', '預設 https://api.minimax.io/v1（僅允許白名單 HTTPS 主機，防止 SSRF）。'],
+            ['MINIMAX_MODEL', 'AI 排版預設模型', '預設 MiniMax-M3.1-Flash，亦支援 MiniMax-M3 與 MiniMax-M2.5。'],
+            ['BUILD_TARGET', 'Next.js 靜態輸出切換', '設為 github-pages 時啟用靜態匯出模式（output: export）。'],
+            ['GITHUB_PAGES_BASE_PATH', '子路徑部署前綴', '例如 /seata-saga-designer，供靜態資源與圖片路徑自動套用 basePath。'],
           ],
         },
       },
@@ -583,14 +619,22 @@ Default: Fail`,
         id: 'faq',
         heading: '常見問題排除（FAQ）',
         paragraphs: [
-          '以下彙整團隊在設計流程、維護 YAML 註解與使用 VS Code Web Extension 時最常遇到的問題與建議解法：',
+          '以下彙整團隊在設計流程、維護 YAML 註解、使用自動／AI 排版與部署 VS Code Web Extension 時最常遇到的問題與建議解法：',
         ],
         table: {
           headers: ['常見問題', '解決方式'],
           rows: [
             [
-              '匯入舊版純 JSON 檔案沒有 style.bounds 座標，節點全部重疊怎麼辦？',
-              '載入無座標 JSON/YAML 時系統會自動套用拓樸排版；您也可隨時點擊工作列「自動排版」重新整理主流程與補償節點位置。',
+              '匯入舊版純 JSON/YAML 沒有 style.bounds 座標，節點重疊或大型流程被裁切怎麼辦？',
+              '載入無座標檔案時系統會自動套用多層語意泳道排版；您也可點擊工作列「自動排版 ▾」切換「精簡簡報排版」或「縱向泳道流程」，並使用最低支援至 15% 的「適應畫面」完整檢視 27+ 節點流程。',
+            ],
+            [
+              '如何調整 Catch 例外連線在起始節點上的出線位置，或恢復自動追蹤？',
+              '直接拖曳節點邊框上的橘色圓形 Catch 錨點即可沿四個邊界自由釘選位置（亦可在右側屬性面板選擇上／右／下／左與比例）；雙擊橘色錨點或點擊「自動排版」即可恢復 360° 自動追蹤。',
+            ],
+            [
+              '點擊「AI 排版」提示尚未設定 MINIMAX_API_KEY 或請求等待時間較長怎麼辦？',
+              '請於伺服器環境變數或 Settings > Secrets 設定 MINIMAX_API_KEY；AI 排版支援最高 300 秒逾時上限、即時經過時間計時與中途取消，未設定金鑰時可直接使用同樣支援零遮擋通道繞道的本機「自動排版」。',
             ],
             [
               '為什麼某些編輯操作後想確認 YAML 註解是否仍完整保留？',
@@ -605,6 +649,101 @@ Default: Fail`,
               '請確認 VS Code 設定 seataSaga.designerUrl 為有效的 HTTPS 位址（本機測試可使用 http://localhost:3000），且該部署網址允許被瀏覽器 iframe 內嵌。',
             ],
           ],
+        },
+      },
+    ],
+  },
+  {
+    index: '09',
+    slug: '09-auto-layout-and-ai',
+    category: '排版與繞道引擎',
+    title: '多層語意自動排版、360° Catch 錨點與 AI 排版',
+    summary:
+      '深入掌握針對大型實務 Seata Saga 流程設計的五層語意泳道自動排版、360° 可拖曳 Catch 邊界錨點、無遮擋圓角通道繞道，以及整合 MiniMax 模型的 AI 智慧語意排版。',
+    readTime: '6 分鐘閱讀',
+    keywords: [
+      '自動排版',
+      '語意泳道',
+      'Catch 錨點',
+      'sourceAnchor',
+      '通道繞道',
+      'AI 排版',
+      'MiniMax',
+      '300秒逾時',
+      '取消機制',
+    ],
+    sections: [
+      {
+        id: 'semantic-swimlane-layout',
+        heading: '五層語意泳道自動排版與三種內建模式',
+        paragraphs: [
+          '針對真實企業級分散式交易（如 27 個節點、44 條連線的臨櫃現金取消流程 repayment_cash_cancellation.saga.yaml），傳統最短路徑 BFS 排版容易讓共用的 Succeed 終點卡在畫布中央、造成大量回頭箭頭與長連線穿越節點。',
+          '全新自動排版引擎（lib/saga/autoLayout.ts）改採無環 DAG 最長路徑分欄與五層語意泳道架構：自動將主流程置中為 0px 水平中軸（Band 0），將逾時／對帳查詢／診斷分流上移至上層泳道（Band -1），將配對的 CompensateState 補償任務精準垂直對齊於原任務正下方並搭配直接拒單處理（Band +1），並將 CompensationTrigger 回滾鏈（Band +2）與補償失敗告警／Fail 終點（Band +3）分層排列；Succeed 終點恆定置於最末端，確保零節點重疊、零逆向回頭連線、零連線穿過節點與零標籤遮擋。',
+          '點擊工作列「自動排版」按鈕可立即以目前選用模式重排並自動適應畫面；點擊右側下拉箭頭可快速切換三種風格：「橫向主幹泳道（預設）」、「精簡簡報排版」（壓縮寬圖欄距，適合大型流程全覽與文件截圖）與「縱向泳道流程」（由上而下主軸展開，動態計算節點標籤高度避免擁擠）。',
+        ],
+        figures: [
+          {
+            src: '/docs/images/09-auto-layout-large-cancellation.png',
+            alt: '27 節點 44 連線的 repayment_cash_cancellation 實務流程套用多層語意泳道自動排版後的完整畫布截圖',
+            caption:
+              '圖 9-1：27 個節點、44 條連線的 repayment_cash_cancellation 實務取消流程，經五層語意泳道排版與圓角通道匯流排繞道後，於 21% 縮放完整呈現在畫布內（0 節點重疊、0 連線穿越、0 逆向連線）。',
+          },
+        ],
+        diagram: {
+          id: 'layout-routing-pipeline',
+          title: '四階段自動排版與無遮擋通道繞道管線',
+          caption:
+            '架構圖 9-1：從語意泳道分類、DAG 最長路徑分欄，到 360° Catch 動態錨點、圓角通道匯流排與零碰撞標籤定位的完整管線。',
+        },
+      },
+      {
+        id: 'catch-anchor-and-corridors',
+        heading: '360° 動態 Catch 邊界錨點與無遮擋圓角通道繞道',
+        paragraphs: [
+          '過去 Catch 例外連線僅固定從來源節點下緣出發，拖曳目標節點至右側或上方時容易拉出橫越節點本體的雜亂線段。現在系統會即時依據目標方向在來源節點的上、右、下、左四個邊界自動定位橘色 Catch 錨點（⚡），並主動錯開同側既有的 Transition 或 Compensation 連線；若同一對節點同時存在正常轉移（Transition）與例外捕獲（Catch），系統會自動保持 Transition 直線並將 Catch 朝外側平滑拱起分離。',
+          '使用者亦可直接按住節點邊框上的橘色圓形錨點沿四邊自由拖曳，或在右側屬性面板指定錨點邊界與比例（ratio 0.1–0.9）；手動位置會持久化至 style.sourceAnchor（支援 JSON、YAML 註解保留與 SVG 匯出），雙擊錨點或執行自動排版即可恢復自動追蹤。對於跨越多欄的長跳躍連線（如前置檢核失敗直達 Succeed），繞道器會自動升級為泳道間隙內的圓角正交匯流排（10px 平行分道），確保線段絕不切穿任何無關節點。',
+        ],
+        table: {
+          headers: ['操作方式', '行為說明', '序列化結果'],
+          rows: [
+            ['預設自動追蹤', '拖曳目標節點時，橘色 Catch 錨點自動沿四邊轉向並避讓同側其他連線。', '不寫入 sourceAnchor，保持純淨定義。'],
+            ['拖曳橘色錨點', '沿來源節點上／右／下／左邊緣自由移動釘選位置，即時預覽繞線與標籤。', '於該條 Catch 物件寫入 style.sourceAnchor: { side, ratio }。'],
+            ['屬性面板微調', '選取 Catch 連線後，在右側面板選擇自動或四邊方位與 10%–90% 位置滑桿。', '同步更新畫布、JSON/YAML 與 SVG 匯出。'],
+            ['雙擊橘色錨點', '一鍵解除手動釘選，恢復 360° 智慧自動追蹤模式。', '移除 style.sourceAnchor 欄位。'],
+          ],
+        },
+        codeBlock: {
+          language: 'yaml',
+          title: 'Catch 錨點手動釘選於 YAML 的儲存格式（關閉「包含畫布座標」時會自動省略）',
+          code: `Catch:
+  - Exceptions:
+      - java.lang.Throwable
+    Next: NotifyOpsIfNeeded
+    style:
+      sourceAnchor:
+        side: right
+        ratio: 0.72`,
+        },
+      },
+      {
+        id: 'minimax-ai-layout',
+        heading: 'MiniMax AI 智慧語意排版（300 秒上限・可中途取消・耗時回報）',
+        paragraphs: [
+          '除了即時零延遲的本機自動排版，點擊工作列「AI 排版」可開啟 MiniMax 語意排版視窗。視窗內建 4 種語意策略（橫向主幹泳道、縱向泳道流程、補償配對優先、精簡簡報排版）、4 組常用提示詞快捷膠囊與 400 字自訂自然語言排版偏好，並可於 MiniMax-M3.1-Flash（快速推薦）、MiniMax-M3（深度推理）與 MiniMax-M2.5 之間自由切換。',
+          '所有 AI 呼叫皆透過伺服器端 Next.js API Route（/api/saga/ai-layout）代理轉發，前端不接觸 API 金鑰。為因應大型深度推理模型回應時間，逾時上限已提升至 300 秒，執行期間畫面即時顯示 mm:ss 經過時間計時器並提供「取消」按鈕（透過 AbortController 即時中止前後端請求）；成功產生後會顯示總共耗時、前後對比 SVG 縮圖與量化品質指標（重疊節點數、連線交叉數、包圍尺寸與長寬比），並經本機碰撞消解與泳道對齊精修後一鍵套用（可隨時 Ctrl+Z 復原）。',
+        ],
+        figures: [
+          {
+            src: '/docs/images/09-ai-layout-modal.png',
+            alt: 'AI 智慧語意排版彈窗顯示四種排版策略、自訂偏好、MiniMax 模型選單與即時畫布基準指標的截圖',
+            caption:
+              '圖 9-2：MiniMax AI 智慧語意排版視窗，提供 4 種排版策略、快捷提示詞、MiniMax 模型切換、目前畫布縮圖與量化品質基準，支援最高 300 秒逾時、即時取消與耗時統計。',
+          },
+        ],
+        callout: {
+          kind: 'info',
+          title: '未設定 MINIMAX_API_KEY 或離線環境下的無縫備援',
+          body: '若伺服器尚未設定 MINIMAX_API_KEY 或部署於純靜態 GitHub Pages 環境，AI 排版視窗會顯示清楚診斷訊息並提供「改用本機自動排版」一鍵備援按鈕，隨時享有同等五層泳道與無遮擋通道繞道品質。',
         },
       },
     ],
@@ -644,7 +783,7 @@ const CHAPTERS_EN: DocChapter[] = [
               {
                 label: 'Workspace Toolbar',
                 detail:
-                  'Switch templates, view machine metrics, trigger Undo/Redo, Auto Layout, Import/Export YAML & SVG, Diagnostics, VS Code Extension packaging, Locale (ZH/EN), and Light/Dark theme.',
+                  'Switch templates, view machine metrics, trigger Undo/Redo, Auto Layout & style dropdown (Horizontal Swimlane / Compact / Vertical), MiniMax AI Layout, multi-file Import/Export YAML & SVG, Diagnostics, VS Code Extension packaging, Locale (ZH/EN), and Light/Dark theme.',
               },
               {
                 label: 'Collapsible State Palette',
@@ -685,7 +824,7 @@ const CHAPTERS_EN: DocChapter[] = [
             ['Ctrl + Y / Shift + Ctrl + Z', 'Redo undone edit', 'Canvas & Split View'],
             ['Alt + Left Arrow', 'Return from a drilled-down SubStateMachine to its parent machine', 'SubStateMachine View'],
             ['Escape', 'Cancel active connection mode or close open dialogs', 'Global'],
-            ['Mouse Wheel / Drag Canvas', 'Zoom (40%–200%) and pan smoothly with Fit View & Reset controls', 'Canvas Viewport'],
+            ['Mouse Wheel / Drag Canvas', 'Zoom (15%–200%) and pan smoothly with Fit View (supports 27+ node production flows) & Reset controls', 'Canvas Viewport'],
           ],
         },
       },
@@ -739,10 +878,11 @@ const CHAPTERS_EN: DocChapter[] = [
       },
       {
         id: 'four-edge-types',
-        heading: '4 Transition Semantics & Automatic Layout',
+        heading: '4 Transition Semantics, 360° Catch Anchors & Auto Layout',
         paragraphs: [
           'Solid slate arrows represent Next/Choice/Default transitions, dashed indigo arrows denote CompensateState bindings, and dotted amber arrows indicate Catch exception boundaries.',
-          'Click Auto Layout at any time to compute topological columns automatically while aligning compensation tasks neatly beneath their forward service tasks.',
+          'Every Catch edge uses 360° dynamic perimeter tracking: its amber anchor marker automatically snaps to the top, right, bottom, or left border facing the target while avoiding sibling Transition and Compensation wires. You can also drag the amber handle anywhere along the 4 borders to pin a custom style.sourceAnchor, or double-click the handle to restore automatic tracking.',
+          'Click Auto Layout (or open its split-button dropdown to switch between Horizontal Swimlane, Compact Presentation, and Vertical Top-Down) to run our 5-band semantic swimlane engine with obstacle-free rounded corridor routing (see Chapter 09).',
         ],
         callout: {
           kind: 'tip',
@@ -808,7 +948,7 @@ const CHAPTERS_EN: DocChapter[] = [
         heading: 'Lossless # Comment Preservation',
         paragraphs: [
           'Production Seata Saga YAML files often carry essential business annotations and operational comments. Naive JSON-to-YAML re-serialization destroys every # comment.',
-          'Our YAML v2 Document AST reconciler preserves header comments, block comments, inline comments, sequence item comments, and trailing comments across node drags, property edits, and state renames.',
+          'Our YAML v2 Document AST reconciler preserves header comments, block comments, inline comments, sequence item comments, and trailing comments across node drags, Catch anchor edits (style.sourceAnchor), property changes, and state renames. Multi-document YAML files separated by --- are also supported during batch import with per-document comment preservation.',
         ],
         figures: [
           {
@@ -922,6 +1062,22 @@ States:
           'Cycle Protection: Direct self-calls and multi-hop circular references are detected and blocked cleanly.',
           'Isolated Per-Machine History: Ctrl+Z inside a child workflow only reverts edits in that child machine.',
           'Automatic Rename Sync: Updating a child machine Name keeps its parent SubStateMachine StateMachineName reference synchronized.',
+        ],
+      },
+      {
+        id: 'batch-import-parent-child',
+        heading: 'Multi-File Parent-Child Batch Import & Production Example',
+        paragraphs: [
+          'Click Import JSON/YAML to select up to 30 files at once (.yaml, .yml, .json, multi-document YAML ---, or JSON arrays). Regardless of file selection order, the batch importer analyzes SubStateMachine references to identify the root state machine, links all child machines automatically, displays the sky-blue Imported Bundle switcher bar (Root / Sub / Flow), and reports any missing references, duplicate names, or partial syntax errors.',
+          'Try importing all 3 real-world YAML files under examples/omni-cash-transaction/ (omni_cash_transaction.saga.yaml, repayment_cash_deposit.saga.yaml, and repayment_cash_cancellation.saga.yaml) together to experience automatic parent-child linking, drill-down navigation, and large-graph swimlane auto-layout.',
+        ],
+        figures: [
+          {
+            src: '/docs/images/09-auto-layout-omni-menu.png',
+            alt: 'Batch-imported 3-file omni-cash-transaction bundle with Root/Sub switcher bar and Auto-Layout style menu open',
+            caption:
+              'Figure 5-3: Importing all 3 omni-cash-transaction YAML files together links omni_cash_transaction as root with both child sub-machines ready for instant switching or double-click drill-down.',
+          },
         ],
       },
     ],
@@ -1098,6 +1254,24 @@ cd seata-saga-vscode-web && npx @vscode/vsce package --target web && code --inst
             ['Input / Output', 'Task / SubMachine', 'array / object', 'Context extraction ($.[key]) and return value mapping ($.#root).'],
             ['Status', 'ServiceTask', 'object', 'Expression mapping to classify execution outcome as SU, FA, or UN.'],
             ['Catch / Retry', 'Task / SubMachine', 'array', 'Exception catch routing (Next) and exponential backoff retry policies.'],
+            ['style.bounds / style.sourceAnchor', 'Designer Layout Meta', 'object', 'Stores node geometry (x, y, width, height) and manually pinned Catch anchors (side, ratio); stripped cleanly when Include Layout (style) is disabled.'],
+          ],
+        },
+      },
+      {
+        id: 'env-and-deployment',
+        heading: 'Server Environment Variables & Deployment (.env.example)',
+        paragraphs: [
+          'Configure these server-side environment variables when enabling MiniMax AI Layout or building static GitHub Pages exports (API keys remain strictly server-side and are never exposed to the browser):',
+        ],
+        table: {
+          headers: ['Environment Variable', 'Purpose', 'Default / Notes'],
+          rows: [
+            ['MINIMAX_API_KEY', 'MiniMax AI Layout API key', 'Optional; enables /api/saga/ai-layout (local Auto Layout works with zero keys).'],
+            ['MINIMAX_BASE_URL', 'MiniMax API endpoint', 'Defaults to https://api.minimax.io/v1 (restricted to allowlisted HTTPS hosts).'],
+            ['MINIMAX_MODEL', 'Default AI Layout model', 'Defaults to MiniMax-M3.1-Flash; also supports MiniMax-M3 and MiniMax-M2.5.'],
+            ['BUILD_TARGET', 'Static export switch', 'Set to github-pages to enable Next.js static export (output: export).'],
+            ['GITHUB_PAGES_BASE_PATH', 'Subpath base prefix', 'Optional prefix (e.g. /seata-saga-designer) applied to static routes and images.'],
           ],
         },
       },
@@ -1132,14 +1306,22 @@ Default: Fail`,
         id: 'faq',
         heading: 'Frequently Asked Questions',
         paragraphs: [
-          'Solutions to the most common questions during workflow modeling, YAML comment preservation, and VS Code Web deployment:',
+          'Solutions to the most common questions during workflow modeling, Auto/AI Layout, YAML comment preservation, and VS Code Web deployment:',
         ],
         table: {
           headers: ['Question', 'Solution'],
           rows: [
             [
-              'Imported legacy JSON lacks style.bounds coordinates and nodes overlap.',
-              'The parser auto-layouts coordinate-free files on load, and you can run Auto Layout from the toolbar anytime.',
+              'Imported legacy JSON/YAML lacks style.bounds coordinates or large flows look clipped.',
+              'Coordinate-free files are automatically arranged by the 5-band semantic swimlane layout engine. Use the Auto Layout split menu (Compact Presentation / Vertical Top-Down) and Fit View (down to 15% zoom) to inspect 27+ node workflows completely.',
+            ],
+            [
+              'How can I move a Catch edge exit point around its source node or restore auto-tracking?',
+              'Drag the amber circular Catch marker along any of the 4 borders of its source node (or pick a side & ratio in the right inspector). Double-click the marker or run Auto Layout to return to 360° automatic tracking.',
+            ],
+            [
+              'AI Layout reports missing MINIMAX_API_KEY or takes long on complex graphs.',
+              'Configure MINIMAX_API_KEY in server environment variables or Settings > Secrets. Requests support up to a 300s timeout ceiling with live elapsed timer and Cancel button, or you can use one-click local Auto Layout anytime.',
             ],
             [
               'How can I verify that YAML # comments are preserved after visual edits?',
@@ -1154,6 +1336,101 @@ Default: Fail`,
               'Verify seataSaga.designerUrl uses an HTTPS origin (or http://localhost:3000 locally) and allows iframe embedding.',
             ],
           ],
+        },
+      },
+    ],
+  },
+  {
+    index: '09',
+    slug: '09-auto-layout-and-ai',
+    category: 'Layout & Routing Engine',
+    title: 'Saga-Aware Auto-Layout, 360° Catch Anchors & AI Layout',
+    summary:
+      'Deep dive into our 5-band semantic swimlane Auto-Layout engine, 360° draggable Catch boundary anchors, obstacle-free rounded corridor routing, and MiniMax AI semantic layout.',
+    readTime: '6 min read',
+    keywords: [
+      'auto layout',
+      'swimlane',
+      'Catch anchor',
+      'sourceAnchor',
+      'corridor routing',
+      'AI layout',
+      'MiniMax',
+      '300s timeout',
+      'cancel',
+    ],
+    sections: [
+      {
+        id: 'semantic-swimlane-layout',
+        heading: '5-Band Semantic Swimlane Auto-Layout & 3 Built-In Modes',
+        paragraphs: [
+          'In real-world enterprise Saga workflows (such as the 27-node, 44-edge repayment_cash_cancellation.saga.yaml), naive BFS shortest-path layering strands shared Succeed terminals in the middle of the graph, creating backward-flying arrows and tangled wires slicing through nodes.',
+          'Our Saga-aware layout engine (lib/saga/autoLayout.ts) combines cycle-safe Kahn longest-path layering with 5 semantic swimlane bands: Band 0 locks the main happy-path spine onto an exact 0px centerline, Band -1 elevates timeout/reconciliation/query/diagnostics tracks above the spine, Band +1 aligns paired CompensateState tasks plumb beneath their forward tasks alongside direct rejections, Band +2 organizes CompensationTrigger rollback chains, and Band +3 isolates rollback-failure alerting and Fail terminals. Succeed always sits strictly at the far end, guaranteeing 0 node overlaps, 0 backward edges, 0 routed node hits, and 0 label collisions.',
+          'Clicking Auto Layout applies your active style instantly and fits the viewport (down to 15% zoom for large flows). Open the adjacent chevron menu to switch among Horizontal Swimlane (Default), Compact Presentation (tighter column gaps for wide production flows), and Vertical Top-Down (dynamic caption-aware row heights).',
+        ],
+        figures: [
+          {
+            src: '/docs/images/09-auto-layout-large-cancellation.png',
+            alt: '27-node 44-edge repayment_cash_cancellation workflow arranged cleanly by the 5-band semantic swimlane auto-layout engine',
+            caption:
+              'Figure 9-1: The 27-node, 44-edge repayment_cash_cancellation production flow laid out across 5 semantic swimlanes with staggered rounded corridor buses, fitting cleanly at 21% zoom with 0 overlaps and 0 routed node hits.',
+          },
+        ],
+        diagram: {
+          id: 'layout-routing-pipeline',
+          title: '4-Stage Auto-Layout & Obstacle-Free Routing Pipeline',
+          caption:
+            'Diagram 9-1: End-to-end pipeline from semantic swimlane classification and DAG layering through 360° Catch anchoring, corridor bus routing, and collision-free label placement.',
+        },
+      },
+      {
+        id: 'catch-anchor-and-corridors',
+        heading: '360° Dynamic Catch Boundary Anchors & Rounded Corridor Routing',
+        paragraphs: [
+          'Catch edges dynamically track their target across all 4 borders (top, right, bottom, left) of the source node while automatically avoiding sibling Transition and Compensation wires. When a Transition and Catch share the exact same (source, target) pair, the Transition stays crisp and straight while the Catch arcs smoothly outward.',
+          'Drag any amber circular Catch handle along its source node perimeter (or fine-tune side and 10%–90% ratio in the Properties Panel) to pin a custom style.sourceAnchor persisted across JSON, comment-preserving YAML, and SVG export. Double-click the handle or run Auto Layout to reset to 360° auto-tracking. Long skip edges automatically upgrade to 10px-staggered rounded orthogonal corridor buses running through open horizontal gutters between swimlanes, achieving 0 edge-through-node hits.',
+        ],
+        table: {
+          headers: ['Interaction', 'Behavior', 'Persistence'],
+          rows: [
+            ['Auto 360° Tracking', 'Amber Catch marker smoothly follows target direction across all 4 borders and avoids sibling wires.', 'Omits sourceAnchor for clean default output.'],
+            ['Drag Amber Marker', 'Pin exit position anywhere along top/right/bottom/left perimeter with live wire and label preview.', 'Writes style.sourceAnchor: { side, ratio } on that Catch entry.'],
+            ['Inspector Controls', 'Select a Catch edge to choose Auto or a fixed border side plus 10%–90% ratio slider.', 'Synced across canvas, JSON/YAML, and SVG export.'],
+            ['Double-Click Marker', 'Unpins custom anchor immediately and restores 360° automatic tracking.', 'Removes style.sourceAnchor cleanly.'],
+          ],
+        },
+        codeBlock: {
+          language: 'yaml',
+          title: 'Pinned Catch sourceAnchor in YAML (omitted automatically when Include Layout is unchecked)',
+          code: `Catch:
+  - Exceptions:
+      - java.lang.Throwable
+    Next: NotifyOpsIfNeeded
+    style:
+      sourceAnchor:
+        side: right
+        ratio: 0.72`,
+        },
+      },
+      {
+        id: 'minimax-ai-layout',
+        heading: 'MiniMax AI Semantic Layout (300s Ceiling, Cancellation & Duration)',
+        paragraphs: [
+          'Alongside instant deterministic Auto Layout, click AI Layout in the toolbar to open the MiniMax semantic layout modal. Choose from 4 layout strategies (Horizontal Swimlane, Vertical Flowchart, Compensation Aligned, Compact Executive), quick prompt presets, custom natural-language preferences (up to 400 characters), and 3 MiniMax models: MiniMax-M3.1-Flash (recommended fast default), MiniMax-M3 (flagship reasoning), and MiniMax-M2.5.',
+          'All requests proxy securely through the server-side Next.js route (/api/saga/ai-layout) without exposing MINIMAX_API_KEY to the browser. Requests support up to a 300-second timeout ceiling, display a live mm:ss elapsed timer, and provide a Cancel button backed by AbortController to abort in-flight work cleanly. Completed runs report total elapsed duration, render before/after SVG previews and quality metrics (overlaps, crossings, aspect ratio), pass through deterministic collision resolution and swimlane alignment, and apply undoably via Ctrl+Z.',
+        ],
+        figures: [
+          {
+            src: '/docs/images/09-ai-layout-modal.png',
+            alt: 'MiniMax AI Semantic Layout modal showing 4 strategy cards, custom prompt presets, model selector, and live graph preview',
+            caption:
+              'Figure 9-2: MiniMax AI Semantic Layout modal with 4 layout strategies, model selector, live mini-preview, baseline quality metrics, 300s timeout ceiling, and cancellation support.',
+          },
+        ],
+        callout: {
+          kind: 'info',
+          title: 'Zero-Key & Static Hosting Fallback',
+          body: 'When MINIMAX_API_KEY is not configured or the app runs as a static GitHub Pages build, the modal shows clear diagnostics and a one-click Local Auto Layout fallback delivering the same 5-band swimlane and corridor routing quality.',
         },
       },
     ],
@@ -1299,8 +1576,14 @@ export function buildDocsMarkdownFiles(
       : '# Apache Seata Saga State Machine Designer — Complete Illustrated Documentation',
     '',
     locale === 'zh-TW'
-      ? '本系列文件涵蓋視覺化設計器、雙欄行號閃爍同步、YAML `#` 註解保留、多層 `SubStateMachine` 巢狀鑽取、分散式事務補償模擬與 VS Code 瀏覽器／桌面版擴充套件的完整圖文操作指南。'
-      : 'Complete illustrated documentation covering visual workflow modeling, Split View flash sync, YAML # comment preservation, multi-level SubStateMachine drill-down, LIFO compensation simulation, and the Universal VS Code Web & Desktop Extension.',
+      ? '本系列文件涵蓋視覺化設計器、360° 動態 Catch 錨點、五層語意自動排版、MiniMax AI 排版、雙欄行號閃爍同步、YAML `#` 註解保留、多檔父子匯入、多層 `SubStateMachine` 巢狀鑽取、分散式事務補償模擬與 VS Code 瀏覽器／桌面版擴充套件的完整圖文操作指南。'
+      : 'Complete illustrated documentation covering visual workflow modeling, 360° dynamic Catch anchors, 5-band semantic Auto-Layout, MiniMax AI Layout, Split View flash sync, YAML # comment preservation, multi-file parent-child batch import, multi-level SubStateMachine drill-down, LIFO compensation simulation, and the Universal VS Code Web & Desktop Extension.',
+    '',
+    locale === 'zh-TW' ? '## GitHub Pages 部署' : '## GitHub Pages Deployment',
+    '',
+    locale === 'zh-TW'
+      ? '部署前，請由儲存庫管理員在 **Settings → Pages → Build and deployment → Source** 選擇 **GitHub Actions**。之後推送至 `main` 或手動執行 **Deploy to GitHub Pages** workflow；若先前執行失敗，請重新執行。靜態建置可在未啟用 Pages 時完成，但部署仍需要此設定。'
+      : 'Before deploying, a repository administrator must select **GitHub Actions** under **Settings → Pages → Build and deployment → Source**, then push to `main` or manually trigger the **Deploy to GitHub Pages** workflow.',
     '',
     locale === 'zh-TW' ? '## 文件目錄' : '## Table of Contents',
     '',

@@ -110,8 +110,8 @@ export default function DocsPortal() {
     URL.revokeObjectURL(url);
 
     const msg = isZh
-      ? '已下載完整 8 章 Markdown 說明文件包 (.zip)'
-      : 'Downloaded complete 8-chapter Markdown documentation bundle (.zip)';
+      ? `已下載完整 ${allChapters.length} 章 Markdown 說明文件包 (.zip)`
+      : `Downloaded complete ${allChapters.length}-chapter Markdown documentation bundle (.zip)`;
     setDownloadNotice(msg);
     setTimeout(() => {
       setDownloadNotice((curr) => (curr === msg ? null : curr));

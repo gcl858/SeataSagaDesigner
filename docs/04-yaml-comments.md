@@ -8,7 +8,7 @@
 
 實務上團隊經常在 Seata Saga YAML 設定檔中撰寫豐富的業務說明、風控門檻理由與維運聯絡註解。傳統「JSON.parse → YAML.stringify」流程會無條件丟棄所有 # 註解，導致視覺化工具難以融入 Git 團隊協作。
 
-本設計器採用基於 AST（抽象語法樹）的無損調和演算法：無論是檔案表頭註解、區塊前註解（commentBefore）、行尾註解（inline # comment）、陣列項目註解或檔尾註解，在畫布進行節點拖曳、連線調整或重新命名後重新匯出 YAML 時，全部都會精準保留於對應位置。
+本設計器採用基於 AST（抽象語法樹）的無損調和演算法：無論是檔案表頭註解、區塊前註解（commentBefore）、行尾註解（inline # comment）、陣列項目註解或檔尾註解，在畫布進行節點拖曳、調整 Catch 邊界錨點（style.sourceAnchor）或重新命名後重新匯出 YAML 時，全部都會精準保留於對應位置。同時支援以 --- 分隔的多文件 YAML 一次批次匯入，且每份文件皆獨立保存各自的註解範本。
 
 ![YAML 編輯器中完整保留表頭註解、行尾註解與節點區塊註解的截圖](../public/docs/images/04-yaml-comments-editor.png)
 
